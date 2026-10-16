@@ -107,7 +107,7 @@ describe('Ring producer & platform tests', function () {
                 'plugin-opts': { mode: 'http', host: 'bing.com', path: '/s' },
             });
             expect(obfs).to.equal(
-                'SS-Obfs = shadowsocks, ss.example.com, 80, aes-128-gcm, pwd, obfs=http, obfs-host=bing.com, obfs-uri=/s',
+                'SS-Obfs = shadowsocks, ss.example.com, 80, aes-128-gcm, pwd, obfs=http, obfs-host=bing.com, obfs-path=/s',
             );
 
             const stls = producer.produce({
@@ -145,11 +145,58 @@ describe('Ring producer & platform tests', function () {
             });
             expect(res).to.include('ws=true');
             expect(res).to.include('ws-path=/ws');
-            expect(res).to.include('ws-host=ws.com');
+            expect(res).to.include('headers=Host:ws.com');
             expect(res).to.include('tls=true');
             expect(res).to.include('sni=sni.com');
             expect(res).to.include('skip-cert-verify=true');
             expect(res).to.include('alpns="h2,http/1.1"');
+        });
+
+        it('normalizes various ip-version inputs to valid Ring enum values', function () {
+            const cases = [
+                ['prefer-v4', 'prefer-ipv4'],
+                ['prefer-ipv4', 'prefer-ipv4'],
+                ['v4_prefer', 'prefer-ipv4'],
+                ['ipv4-prefer', 'prefer-ipv4'],
+                ['prefer-v6', 'prefer-ipv6'],
+                ['prefer-ipv6', 'prefer-ipv6'],
+                ['v6_prefer', 'prefer-ipv6'],
+                ['ipv6-prefer', 'prefer-ipv6'],
+                ['v4-only', 'ipv4-only'],
+                ['ipv4-only', 'ipv4-only'],
+                ['v4_only', 'ipv4-only'],
+                ['ipv4', 'ipv4-only'],
+                ['v6-only', 'ipv6-only'],
+                ['ipv6-only', 'ipv6-only'],
+                ['v6_only', 'ipv6-only'],
+                ['ipv6', 'ipv6-only'],
+                ['dual', 'dual'],
+                ['dual_stack', 'dual'],
+                ['dual-stack', 'dual'],
+            ];
+            for (const [input, expected] of cases) {
+                const output = producer.produce({
+                    type: 'ss',
+                    name: 'Node',
+                    server: '1.1.1.1',
+                    port: 8388,
+                    cipher: 'aes-128-gcm',
+                    password: 'pwd',
+                    'ip-version': input,
+                });
+                expect(output).to.include(`ip-version=${expected}`);
+            }
+
+            const invalidOutput = producer.produce({
+                type: 'ss',
+                name: 'Node',
+                server: '1.1.1.1',
+                port: 8388,
+                cipher: 'aes-128-gcm',
+                password: 'pwd',
+                'ip-version': 'invalid-version-xyz',
+            });
+            expect(invalidOutput).not.to.include('ip-version=');
         });
 
         it('throws RingUnsupportedProxyError for unsupported network or config', function () {
@@ -197,7 +244,7 @@ describe('Ring producer & platform tests', function () {
                 'down-mbps': 500,
             });
             expect(hy).to.equal(
-                'Hy2 = hysteria, hy.com, 443, auth=pass, down=500, up=100, sni=hy.com',
+                'Hy2 = hysteria, hy.com, 443, auth=pass, down=500, sni=hy.com',
             );
 
             const tuic = producer.produce({

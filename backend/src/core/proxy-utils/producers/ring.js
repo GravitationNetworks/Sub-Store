@@ -55,6 +55,51 @@ function appendAlpns(options, proxy) {
     }
 }
 
+const validRingIpVersions = new Set([
+    'dual',
+    'ipv4-only',
+    'ipv6-only',
+    'prefer-ipv4',
+    'prefer-ipv6',
+]);
+
+const ipVersionsMap = {
+    dual: 'dual',
+    dual_stack: 'dual',
+    'dual-stack': 'dual',
+    ipv4: 'ipv4-only',
+    'ipv4-only': 'ipv4-only',
+    'v4-only': 'ipv4-only',
+    v4_only: 'ipv4-only',
+    ipv6: 'ipv6-only',
+    'ipv6-only': 'ipv6-only',
+    'v6-only': 'ipv6-only',
+    v6_only: 'ipv6-only',
+    'ipv4-prefer': 'prefer-ipv4',
+    'prefer-ipv4': 'prefer-ipv4',
+    'prefer-v4': 'prefer-ipv4',
+    prefer_v4: 'prefer-ipv4',
+    v4_prefer: 'prefer-ipv4',
+    'ipv6-prefer': 'prefer-ipv6',
+    'prefer-ipv6': 'prefer-ipv6',
+    'prefer-v6': 'prefer-ipv6',
+    prefer_v6: 'prefer-ipv6',
+    v6_prefer: 'prefer-ipv6',
+};
+
+function formatRingIpVersion(val) {
+    if (!val) return undefined;
+    const lower = String(stripQuotes(val)).trim().toLowerCase();
+    const mapped = ipVersionsMap[lower];
+    if (mapped && validRingIpVersions.has(mapped)) {
+        return mapped;
+    }
+    if (validRingIpVersions.has(lower)) {
+        return lower;
+    }
+    return undefined;
+}
+
 function appendCommonOptions(options, proxy) {
     if (proxy.tfo === true || proxy.tfo === 'true') {
         options.push('tfo=true');
@@ -62,8 +107,10 @@ function appendCommonOptions(options, proxy) {
         options.push('tfo=false');
     }
 
-    if (isPresent(proxy, 'ip-version')) {
-        options.push(`ip-version=${quoteRingValue(proxy['ip-version'])}`);
+    const rawIpVersion = proxy['ip-version'] || proxy['ip-preference'];
+    const ipVersion = formatRingIpVersion(rawIpVersion);
+    if (ipVersion) {
+        options.push(`ip-version=${quoteRingValue(ipVersion)}`);
     }
 
     const iface = proxy.interface || proxy['interface-name'];
@@ -93,10 +140,6 @@ function appendCommonOptions(options, proxy) {
         proxy.prev_hop;
     if (underlying != null && `${underlying}`.trim().length > 0) {
         options.push(`underlying-proxy=${quoteRingValue(underlying)}`);
-    }
-
-    if (proxy.udp === true || proxy.udp === 'true') {
-        options.push('udp=true');
     }
 }
 
@@ -166,15 +209,47 @@ export default function Ring_Producer() {
                     `Platform ${targetPlatform} does not support proxy type: ${proxy.type}`,
                 );
         }
-
-        const serverDns = proxy['server-dns'];
-        if (Array.isArray(serverDns) && serverDns.length > 0) {
-            result = `${result}, server-dns=${quoteRingValue(serverDns.join(','))}`;
-        }
         return result;
     };
 
     return { produce };
+}
+
+function formatHeaders(headers) {
+    if (!headers) return '';
+    if (typeof headers === 'string') return headers;
+    if (typeof headers === 'object') {
+        const pairs = [];
+        for (const [key, value] of Object.entries(headers)) {
+            if (value != null && `${value}`.length > 0) {
+                pairs.push(`${key}:${value}`);
+            }
+        }
+        return pairs.join('|');
+    }
+    return '';
+}
+
+function appendWsHeaders(options, proxy) {
+    const rawHeaders =
+        proxy['ws-opts']?.headers ||
+        proxy['ws-headers'] ||
+        proxy.headers ||
+        {};
+    const headers = typeof rawHeaders === 'object' ? { ...rawHeaders } : {};
+    const host =
+        proxy['ws-opts']?.headers?.Host ||
+        proxy['ws-headers']?.Host ||
+        proxy['ws-opts']?.headers?.host ||
+        proxy['ws-headers']?.host ||
+        proxy['ws-opts']?.host;
+    if (host && !headers.Host && !headers.host) {
+        headers.Host = host;
+    }
+    const formatted = formatHeaders(headers);
+    if (formatted) {
+        options.push(`headers=${quoteRingValue(formatted)}`);
+    }
 }
 
 function shadowsocks(proxy) {
@@ -192,7 +267,7 @@ function shadowsocks(proxy) {
                 options.push(`obfs-host=${quoteRingValue(proxy['plugin-opts'].host)}`);
             }
             if (proxy['plugin-opts']?.path) {
-                options.push(`obfs-uri=${quoteRingValue(proxy['plugin-opts'].path)}`);
+                options.push(`obfs-path=${quoteRingValue(proxy['plugin-opts'].path)}`);
             }
         } else if (proxy.plugin === 'shadow-tls') {
             if (proxy['plugin-opts']?.password) {
@@ -217,10 +292,6 @@ function shadowsocks(proxy) {
                 `Platform ${targetPlatform} does not support plugin ${proxy.plugin}`,
             );
         }
-    }
-
-    if (proxy['udp-over-tcp']) {
-        options.push('udp-over-tcp=true');
     }
 
     appendCommonOptions(options, proxy);
@@ -248,14 +319,7 @@ function vmess(proxy, includeUnsupportedProxy) {
         if (wsPath) {
             options.push(`ws-path=${quoteRingValue(wsPath)}`);
         }
-        const wsHost =
-            proxy['ws-opts']?.headers?.Host ||
-            proxy['ws-headers']?.Host ||
-            proxy['ws-opts']?.headers?.host ||
-            proxy['ws-headers']?.host;
-        if (wsHost) {
-            options.push(`ws-host=${quoteRingValue(wsHost)}`);
-        }
+        appendWsHeaders(options, proxy);
     }
 
     if (proxy.tls === true) {
@@ -313,14 +377,7 @@ function trojan(proxy, includeUnsupportedProxy) {
         if (wsPath) {
             options.push(`ws-path=${quoteRingValue(wsPath)}`);
         }
-        const wsHost =
-            proxy['ws-opts']?.headers?.Host ||
-            proxy['ws-headers']?.Host ||
-            proxy['ws-opts']?.headers?.host ||
-            proxy['ws-headers']?.host;
-        if (wsHost) {
-            options.push(`ws-host=${quoteRingValue(wsHost)}`);
-        }
+        appendWsHeaders(options, proxy);
     }
 
     appendCommonOptions(options, proxy);
@@ -339,11 +396,6 @@ function hysteria(proxy) {
     const down = proxy.down || proxy['down-mbps'] || proxy.down_mbps;
     if (down != null && `${down}`.length > 0) {
         options.push(`down=${quoteRingValue(down)}`);
-    }
-
-    const up = proxy.up || proxy['up-mbps'] || proxy.up_mbps;
-    if (up != null && `${up}`.length > 0) {
-        options.push(`up=${quoteRingValue(up)}`);
     }
 
     const sni = proxy.sni || proxy.server;

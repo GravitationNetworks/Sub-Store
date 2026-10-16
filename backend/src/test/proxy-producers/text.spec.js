@@ -5901,11 +5901,10 @@ describe('Ring proxy producer', function () {
             cipher: 'aes-128-gcm',
             password: 'secret',
             tfo: true,
-            udp: true,
-            'ip-version': 'dual',
+            'ip-version': 'prefer-v4',
         });
         expect(output).to.equal(
-            'SS Node = shadowsocks, ss.example.com, 8388, aes-128-gcm, secret, tfo=true, ip-version=dual, udp=true',
+            'SS Node = shadowsocks, ss.example.com, 8388, aes-128-gcm, secret, tfo=true, ip-version=prefer-ipv4',
         );
     });
 
@@ -5939,7 +5938,7 @@ describe('Ring proxy producer', function () {
             },
         });
         expect(obfsOutput).to.equal(
-            'SS Obfs = shadowsocks, ss.example.com, 8388, aes-256-gcm, secret, obfs=http, obfs-host=obfs.example.com, obfs-uri=/obfs-path',
+            'SS Obfs = shadowsocks, ss.example.com, 8388, aes-256-gcm, secret, obfs=http, obfs-host=obfs.example.com, obfs-path=/obfs-path',
         );
 
         const stOutput = produceExternal('Ring', {
@@ -5982,7 +5981,7 @@ describe('Ring proxy producer', function () {
             'skip-cert-verify': true,
         });
         expect(output).to.equal(
-            `VMess WS TLS = vmess, vmess.example.com, 443, ${UUID}, ws=true, ws-path=/ws-path, ws-host=ws.example.com, tls=true, sni=sni.example.com, skip-cert-verify=true, alpns="h2,http/1.1", aead=true`,
+            `VMess WS TLS = vmess, vmess.example.com, 443, ${UUID}, ws=true, ws-path=/ws-path, headers=Host:ws.example.com, tls=true, sni=sni.example.com, skip-cert-verify=true, alpns="h2,http/1.1", aead=true`,
         );
     });
 
@@ -6013,12 +6012,11 @@ describe('Ring proxy producer', function () {
             port: 443,
             auth: 'hy-secret',
             down: 100,
-            up: 50,
             sni: 'hy.example.com',
             alpn: ['h3'],
         });
         expect(hyOutput).to.equal(
-            'Hysteria Node = hysteria, hy.example.com, 443, auth=hy-secret, down=100, up=50, sni=hy.example.com, alpns=h3',
+            'Hysteria Node = hysteria, hy.example.com, 443, auth=hy-secret, down=100, sni=hy.example.com, alpns=h3',
         );
 
         const hy2Output = produceExternal('Ring', {
