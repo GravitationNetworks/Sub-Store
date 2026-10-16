@@ -129,6 +129,83 @@ describe('Ring producer & platform tests', function () {
             );
         });
 
+        it('converts all Sing Mux parameters from top-level, smux and multiplex objects', function () {
+            // 1. Direct top-level options
+            const directMux = producer.produce({
+                type: 'ss',
+                name: 'SS-Mux-1',
+                server: 'ss.example.com',
+                port: 8388,
+                cipher: 'aes-128-gcm',
+                password: 'pwd',
+                'sing-mux': true,
+                'sing-mux-stream-num-per-conn': 16,
+                'sing-mux-max-connections': 4,
+                'sing-mux-padding': true,
+                'sing-mux-idle-timeout': 60,
+            });
+            expect(directMux).to.include('sing-mux=true');
+            expect(directMux).to.include('sing-mux-stream-num-per-conn=16');
+            expect(directMux).to.include('sing-mux-max-connections=4');
+            expect(directMux).to.include('sing-mux-padding=true');
+            expect(directMux).to.include('sing-mux-idle-timeout=60');
+
+            // 2. From smux object (Sing-box format)
+            const smuxNode = producer.produce({
+                type: 'trojan',
+                name: 'Trojan-Smux',
+                server: 'trojan.example.com',
+                port: 443,
+                password: 'pwd',
+                smux: {
+                    enabled: true,
+                    'max-streams': 8,
+                    'max-connections': 2,
+                    padding: true,
+                    'idle-timeout': 45,
+                },
+            });
+            expect(smuxNode).to.include('sing-mux=true');
+            expect(smuxNode).to.include('sing-mux-stream-num-per-conn=8');
+            expect(smuxNode).to.include('sing-mux-max-connections=2');
+            expect(smuxNode).to.include('sing-mux-padding=true');
+            expect(smuxNode).to.include('sing-mux-idle-timeout=45');
+
+            // 3. From multiplex object (ClashMeta format)
+            const multiplexNode = producer.produce({
+                type: 'ss',
+                name: 'SS-Multiplex',
+                server: 'ss.example.com',
+                port: 8388,
+                cipher: 'aes-128-gcm',
+                password: 'pwd',
+                multiplex: {
+                    enabled: true,
+                    max_streams: 32,
+                    max_connections: 8,
+                    padding: false,
+                    idle_timeout: 90,
+                },
+            });
+            expect(multiplexNode).to.include('sing-mux=true');
+            expect(multiplexNode).to.include('sing-mux-stream-num-per-conn=32');
+            expect(multiplexNode).to.include('sing-mux-max-connections=8');
+            expect(multiplexNode).to.include('sing-mux-padding=false');
+            expect(multiplexNode).to.include('sing-mux-idle-timeout=90');
+
+            // 4. Explicit disable
+            const disabledMux = producer.produce({
+                type: 'ss',
+                name: 'SS-NoMux',
+                server: 'ss.example.com',
+                port: 8388,
+                cipher: 'aes-128-gcm',
+                password: 'pwd',
+                'sing-mux': false,
+            });
+            expect(disabledMux).to.include('sing-mux=false');
+        });
+
         it('produces VMess with WS and TLS', function () {
             const res = producer.produce({
                 type: 'vmess',

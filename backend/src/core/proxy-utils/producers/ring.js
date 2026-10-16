@@ -100,6 +100,94 @@ function formatRingIpVersion(val) {
     return undefined;
 }
 
+function appendSingMuxOptions(options, proxy) {
+    const smux = proxy.smux || {};
+    const multiplex = proxy.multiplex || {};
+
+    const isEnabled =
+        proxy['sing-mux'] === true ||
+        proxy['sing-mux'] === 'true' ||
+        proxy.sing_mux === true ||
+        proxy.sing_mux === 'true' ||
+        proxy.mux === true ||
+        proxy.mux === 'true' ||
+        smux.enabled === true ||
+        multiplex.enabled === true;
+
+    const isExplicitlyDisabled =
+        proxy['sing-mux'] === false ||
+        proxy['sing-mux'] === 'false' ||
+        proxy.sing_mux === false ||
+        smux.enabled === false ||
+        multiplex.enabled === false;
+
+    if (isEnabled) {
+        options.push('sing-mux=true');
+
+        // sing-mux-stream-num-per-conn
+        const streamNum =
+            proxy['sing-mux-stream-num-per-conn'] ??
+            proxy['stream-num-per-conn'] ??
+            smux['max-streams'] ??
+            smux.max_streams ??
+            multiplex['max-streams'] ??
+            multiplex.max_streams ??
+            proxy['max-streams'];
+        if (streamNum != null && !Number.isNaN(Number(streamNum))) {
+            const parsed = parseInt(streamNum, 10);
+            if (parsed > 0) {
+                options.push(`sing-mux-stream-num-per-conn=${parsed}`);
+            }
+        }
+
+        // sing-mux-max-connections
+        const maxConnections =
+            proxy['sing-mux-max-connections'] ??
+            proxy['max-connections'] ??
+            smux['max-connections'] ??
+            smux.max_connections ??
+            multiplex['max-connections'] ??
+            multiplex.max_connections;
+        if (maxConnections != null && !Number.isNaN(Number(maxConnections))) {
+            const parsed = parseInt(maxConnections, 10);
+            if (parsed > 0) {
+                options.push(`sing-mux-max-connections=${parsed}`);
+            }
+        }
+
+        // sing-mux-padding
+        const padding =
+            proxy['sing-mux-padding'] ??
+            proxy.padding ??
+            smux.padding ??
+            multiplex.padding;
+        if (padding != null) {
+            if (padding === true || padding === 'true') {
+                options.push('sing-mux-padding=true');
+            } else if (padding === false || padding === 'false') {
+                options.push('sing-mux-padding=false');
+            }
+        }
+
+        // sing-mux-idle-timeout
+        const idleTimeout =
+            proxy['sing-mux-idle-timeout'] ??
+            proxy['idle-timeout'] ??
+            smux['idle-timeout'] ??
+            smux.idle_timeout ??
+            multiplex['idle-timeout'] ??
+            multiplex.idle_timeout;
+        if (idleTimeout != null && !Number.isNaN(Number(idleTimeout))) {
+            const parsed = parseInt(idleTimeout, 10);
+            if (parsed >= 0) {
+                options.push(`sing-mux-idle-timeout=${parsed}`);
+            }
+        }
+    } else if (isExplicitlyDisabled) {
+        options.push('sing-mux=false');
+    }
+}
+
 function appendCommonOptions(options, proxy) {
     if (proxy.tfo === true || proxy.tfo === 'true') {
         options.push('tfo=true');
@@ -123,15 +211,7 @@ function appendCommonOptions(options, proxy) {
         options.push(`override-test-url=${quoteRingValue(testUrl)}`);
     }
 
-    if (
-        proxy['sing-mux'] === true ||
-        proxy['sing-mux'] === 'true' ||
-        proxy.smux?.enabled === true
-    ) {
-        options.push('sing-mux=true');
-    } else if (proxy['sing-mux'] === false || proxy['sing-mux'] === 'false') {
-        options.push('sing-mux=false');
-    }
+    appendSingMuxOptions(options, proxy);
 
     const underlying =
         proxy['underlying-proxy'] ||
