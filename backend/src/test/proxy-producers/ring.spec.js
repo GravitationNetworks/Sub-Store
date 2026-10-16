@@ -240,7 +240,7 @@ describe('Ring producer & platform tests', function () {
                 password: 'p@ss with space,comma=eq#hash"quote"',
             });
             expect(res).to.match(/^Node1Test = shadowsocks/);
-            expect(res).to.include('password="p@ss with space,comma=eq#hash\\"quote\\""');
+            expect(res).to.include('"p@ss with space,comma=eq#hash\\"quote\\""');
         });
     });
 
@@ -268,6 +268,190 @@ describe('Ring producer & platform tests', function () {
             expect(output).to.include('SS-Node = shadowsocks, 1.2.3.4, 8388, aes-128-gcm, pwd');
             expect(output).to.include('Direct-Node = direct');
             expect(output).not.to.include('VLESS-Node');
+        });
+    });
+
+    describe('Script operators with Ring target', function () {
+        it('passes targetPlatform === "Ring" to Script Operator operator function', async function () {
+            const proxies = [
+                {
+                    type: 'ss',
+                    name: 'SS-Node',
+                    server: '1.1.1.1',
+                    port: 8388,
+                    cipher: 'aes-128-gcm',
+                    password: 'pwd',
+                },
+            ];
+            const operators = [
+                {
+                    type: 'Script Operator',
+                    args: {
+                        mode: 'script',
+                        content: `function operator(proxies, targetPlatform, context) {
+                            return proxies.map(p => ({
+                                ...p,
+                                _receivedTarget: targetPlatform,
+                            }));
+                        }`,
+                    },
+                },
+            ];
+            const processed = await ProxyUtils.process(proxies, operators, 'Ring');
+            expect(processed).to.be.an('array').with.lengthOf(1);
+            expect(processed[0]._receivedTarget).to.equal('Ring');
+        });
+
+        it('dynamically modifies node properties when targetPlatform is Ring', async function () {
+            const proxies = [
+                {
+                    type: 'ss',
+                    name: 'SS-Node',
+                    server: '1.1.1.1',
+                    port: 8388,
+                    cipher: 'aes-128-gcm',
+                    password: 'pwd',
+                },
+                {
+                    type: 'trojan',
+                    name: 'Trojan-Node',
+                    server: '2.2.2.2',
+                    port: 443,
+                    password: 'pwd',
+                    sni: 'old.example.com',
+                },
+                {
+                    type: 'vmess',
+                    name: 'VMess-Node',
+                    server: '3.3.3.3',
+                    port: 443,
+                    uuid: UUID,
+                    network: 'ws',
+                },
+            ];
+            const operators = [
+                {
+                    type: 'Script Operator',
+                    args: {
+                        mode: 'script',
+                        content: `function operator(proxies, targetPlatform, context) {
+                            if (targetPlatform === 'Ring') {
+                                return proxies
+                                    .filter(p => p.type !== 'vmess')
+                                    .map(p => {
+                                        const clone = { ...p };
+                                        if (clone.type === 'ss') {
+                                            clone['sing-mux'] = true;
+                                        } else if (clone.type === 'trojan') {
+                                            clone.sni = 'ring.example.com';
+                                        }
+                                        return clone;
+                                    });
+                            }
+                            return proxies;
+                        }`,
+                    },
+                },
+            ];
+            const processed = await ProxyUtils.process(proxies, operators, 'Ring');
+            expect(processed).to.have.lengthOf(2);
+            expect(processed[0].name).to.equal('SS-Node');
+            expect(processed[0]['sing-mux']).to.be.true;
+            expect(processed[1].name).to.equal('Trojan-Node');
+            expect(processed[1].sni).to.equal('ring.example.com');
+        });
+
+        it('produces expected Ring INI configuration lines for script-processed nodes', async function () {
+            const proxies = [
+                {
+                    type: 'ss',
+                    name: 'SS-Node',
+                    server: '1.2.3.4',
+                    port: 8388,
+                    cipher: 'aes-128-gcm',
+                    password: 'pwd',
+                },
+                {
+                    type: 'trojan',
+                    name: 'Trojan-Node',
+                    server: '2.3.4.5',
+                    port: 443,
+                    password: 'pwd',
+                    sni: 'old.example.com',
+                },
+            ];
+            const operators = [
+                {
+                    type: 'Script Operator',
+                    args: {
+                        mode: 'script',
+                        content: `function operator(proxies, targetPlatform, context) {
+                            if (targetPlatform === 'Ring') {
+                                return proxies.map(p => {
+                                    const clone = { ...p };
+                                    if (clone.type === 'ss') {
+                                        clone['sing-mux'] = true;
+                                    } else if (clone.type === 'trojan') {
+                                        clone.sni = 'ring.example.com';
+                                    }
+                                    return clone;
+                                });
+                            }
+                            return proxies;
+                        }`,
+                    },
+                },
+            ];
+            const processed = await ProxyUtils.process(proxies, operators, 'Ring');
+            const ringIni = ProxyUtils.produce(processed, 'Ring');
+            expect(ringIni).to.include(
+                'SS-Node = shadowsocks, 1.2.3.4, 8388, aes-128-gcm, pwd, sing-mux=true',
+            );
+            expect(ringIni).to.include(
+                'Trojan-Node = trojan, 2.3.4.5, 443, pwd, tls=true, sni=ring.example.com',
+            );
+        });
+
+        it('filters nodes with Script Filter under Ring platform and produces output', async function () {
+            const proxies = [
+                {
+                    type: 'ss',
+                    name: 'SS-Keep',
+                    server: '1.1.1.1',
+                    port: 8388,
+                    cipher: 'aes-128-gcm',
+                    password: 'pwd',
+                },
+                {
+                    type: 'ss',
+                    name: 'SS-Drop',
+                    server: '2.2.2.2',
+                    port: 8388,
+                    cipher: 'aes-128-gcm',
+                    password: 'pwd',
+                },
+            ];
+            const filters = [
+                {
+                    type: 'Script Filter',
+                    args: {
+                        mode: 'script',
+                        content: `function filter(proxies, targetPlatform, context) {
+                            if (targetPlatform !== 'Ring') return proxies.map(() => false);
+                            return proxies.map(p => p.name === 'SS-Keep');
+                        }`,
+                    },
+                },
+            ];
+            const filtered = await ProxyUtils.process(proxies, filters, 'Ring');
+            expect(filtered).to.have.lengthOf(1);
+            expect(filtered[0].name).to.equal('SS-Keep');
+
+            const ringIni = ProxyUtils.produce(filtered, 'Ring');
+            expect(ringIni).to.equal(
+                'SS-Keep = shadowsocks, 1.1.1.1, 8388, aes-128-gcm, pwd',
+            );
+            expect(ringIni).not.to.include('SS-Drop');
         });
     });
 });
