@@ -5904,7 +5904,7 @@ describe('Ring proxy producer', function () {
             'ip-version': 'prefer-v4',
         });
         expect(output).to.equal(
-            'SS Node = shadowsocks, ss.example.com, 8388, aes-128-gcm, secret, tfo=true, ip-version=prefer-ipv4',
+            'SS Node = shadowsocks, ss.example.com, 8388, encrypt-method=aes-128-gcm, password=secret, tfo=true, ip-version=prefer-ipv4',
         );
     });
 
@@ -5918,11 +5918,11 @@ describe('Ring proxy producer', function () {
             password: 'pass, word=1#2',
         });
         expect(output).to.equal(
-            'SS Special = shadowsocks, ss.example.com, 8388, chacha20-ietf-poly1305, "pass, word=1#2"',
+            'SS Special = shadowsocks, ss.example.com, 8388, encrypt-method=chacha20-ietf-poly1305, password="pass, word=1#2"',
         );
     });
 
-    it('produces shadowsocks with obfs and shadow-tls plugins', function () {
+    it('produces shadowsocks with obfs and rejects shadow-tls plugins', function () {
         const obfsOutput = produceExternal('Ring', {
             type: 'ss',
             name: 'SS Obfs',
@@ -5938,26 +5938,25 @@ describe('Ring proxy producer', function () {
             },
         });
         expect(obfsOutput).to.equal(
-            'SS Obfs = shadowsocks, ss.example.com, 8388, aes-256-gcm, secret, obfs=http, obfs-host=obfs.example.com, obfs-path=/obfs-path',
+            'SS Obfs = shadowsocks, ss.example.com, 8388, encrypt-method=aes-256-gcm, password=secret, obfs=http, obfs-host=obfs.example.com, obfs-path=/obfs-path',
         );
 
-        const stOutput = produceExternal('Ring', {
-            type: 'ss',
-            name: 'SS ShadowTLS',
-            server: 'ss.example.com',
-            port: 8388,
-            cipher: 'aes-256-gcm',
-            password: 'secret',
-            plugin: 'shadow-tls',
-            'plugin-opts': {
-                password: 'st-password',
-                host: 'st.example.com',
-                version: 3,
-            },
-        });
-        expect(stOutput).to.equal(
-            'SS ShadowTLS = shadowsocks, ss.example.com, 8388, aes-256-gcm, secret, shadow-tls-password=st-password, shadow-tls-sni=st.example.com, shadow-tls-version=3',
-        );
+        expect(() =>
+            produceExternal('Ring', {
+                type: 'ss',
+                name: 'SS ShadowTLS',
+                server: 'ss.example.com',
+                port: 8388,
+                cipher: 'aes-256-gcm',
+                password: 'secret',
+                plugin: 'shadow-tls',
+                'plugin-opts': {
+                    password: 'st-password',
+                    host: 'st.example.com',
+                    version: 3,
+                },
+            }),
+        ).to.throw();
     });
 
     it('produces vmess lines with ws, tls, alpn and aead', function () {
@@ -5981,7 +5980,7 @@ describe('Ring proxy producer', function () {
             'skip-cert-verify': true,
         });
         expect(output).to.equal(
-            `VMess WS TLS = vmess, vmess.example.com, 443, ${UUID}, ws=true, ws-path=/ws-path, headers=Host:ws.example.com, tls=true, sni=sni.example.com, skip-cert-verify=true, alpns="h2,http/1.1", aead=true`,
+            `VMess WS TLS = vmess, vmess.example.com, 443, uuid=${UUID}, ws=true, ws-path=/ws-path, headers=Host:ws.example.com, tls=true, sni=sni.example.com, skip-cert-verify=true, alpns="h2,http/1.1", aead=true`,
         );
     });
 
@@ -6000,7 +5999,7 @@ describe('Ring proxy producer', function () {
             'skip-cert-verify': true,
         });
         expect(output).to.equal(
-            'Trojan Node = trojan, trojan.example.com, 443, trojan-secret, tls=true, sni=tr.example.com, skip-cert-verify=true, ws=true, ws-path=/trojan-ws',
+            'Trojan Node = trojan, trojan.example.com, 443, password=trojan-secret, tls=true, sni=tr.example.com, skip-cert-verify=true, ws=true, ws-path=/trojan-ws',
         );
     });
 
@@ -6047,8 +6046,9 @@ describe('Ring proxy producer', function () {
             'congestion-controller': 'bbr',
         });
         expect(output).to.equal(
-            `TUIC Node = tuic, tuic.example.com, 8443, uuid=${UUID}, password=tuic-password, udp-relay-mode=native, sni=tuic.example.com, congestion-controller=bbr`,
+            `TUIC Node = tuic, tuic.example.com, 8443, uuid=${UUID}, password=tuic-password, udp-relay-mode=native, sni=tuic.example.com`,
         );
+        expect(output).not.to.include('congestion-controller');
     });
 
     it('produces wireguard lines with addresses, private-key, mtu and peers', function () {
@@ -6083,7 +6083,7 @@ describe('Ring proxy producer', function () {
             sni: 'http.example.com',
         });
         expect(httpOutput).to.equal(
-            'HTTP Node = http, http.example.com, 8080, admin, password, tls=true, sni=http.example.com',
+            'HTTP Node = http, http.example.com, 8080, username=admin, password=password, tls=true, sni=http.example.com',
         );
 
         const socksOutput = produceExternal('Ring', {
@@ -6095,7 +6095,7 @@ describe('Ring proxy producer', function () {
             password: 'pass',
         });
         expect(socksOutput).to.equal(
-            'Socks Node = socks, socks.example.com, 1080, user, pass',
+            'Socks Node = socks, socks.example.com, 1080, username=user, password=pass',
         );
     });
 
@@ -6120,10 +6120,14 @@ describe('Ring proxy producer', function () {
             password: 'secret',
             sni: 'st.example.com',
             version: 3,
+            'skip-cert-verify': true,
+            'enable-early-data': true,
         });
         expect(stOutput).to.equal(
             'ShadowTLS Node = shadowtls, st.example.com, 443, password=secret, sni=st.example.com, version=3',
         );
+        expect(stOutput).not.to.include('skip-cert-verify');
+        expect(stOutput).not.to.include('enable-early-data');
 
         const sshOutput = produceExternal('Ring', {
             type: 'ssh',
@@ -6155,6 +6159,18 @@ describe('Ring proxy producer', function () {
             name: 'Reject Drop Node',
         });
         expect(rejectDropOutput).to.equal('Reject Drop Node = reject-drop');
+
+        const rejectTinygifOutput = produceExternal('Ring', {
+            type: 'reject-tinygif',
+            name: 'Reject Tinygif Node',
+        });
+        expect(rejectTinygifOutput).to.equal('Reject Tinygif Node = reject-tinygif');
+
+        const rejectNoDropOutput = produceExternal('Ring', {
+            type: 'reject-no-drop',
+            name: 'Reject No Drop Node',
+        });
+        expect(rejectNoDropOutput).to.equal('Reject No Drop Node = reject-no-drop');
     });
 
     it('cleans illegal characters from node name', function () {

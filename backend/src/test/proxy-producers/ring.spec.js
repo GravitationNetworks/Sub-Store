@@ -32,7 +32,7 @@ describe('Ring producer & platform tests', function () {
             };
             const r1 = PROXY_PRODUCERS.Ring.produce(node);
             const r2 = PROXY_PRODUCERS.ring.produce(node);
-            expect(r1).to.equal('SS1 = shadowsocks, 1.1.1.1, 8388, aes-128-gcm, pass');
+            expect(r1).to.equal('SS1 = shadowsocks, 1.1.1.1, 8388, encrypt-method=aes-128-gcm, password=pass');
             expect(r1).to.equal(r2);
         });
     });
@@ -95,7 +95,7 @@ describe('Ring producer & platform tests', function () {
     describe('Protocol conversions', function () {
         const producer = Ring_Producer();
 
-        it('produces Shadowsocks with obfs and shadow-tls plugins', function () {
+        it('produces Shadowsocks with obfs and rejects shadow-tls plugin', function () {
             const obfs = producer.produce({
                 type: 'ss',
                 name: 'SS-Obfs',
@@ -107,26 +107,25 @@ describe('Ring producer & platform tests', function () {
                 'plugin-opts': { mode: 'http', host: 'bing.com', path: '/s' },
             });
             expect(obfs).to.equal(
-                'SS-Obfs = shadowsocks, ss.example.com, 80, aes-128-gcm, pwd, obfs=http, obfs-host=bing.com, obfs-path=/s',
+                'SS-Obfs = shadowsocks, ss.example.com, 80, encrypt-method=aes-128-gcm, password=pwd, obfs=http, obfs-host=bing.com, obfs-path=/s',
             );
 
-            const stls = producer.produce({
-                type: 'ss',
-                name: 'SS-STLS',
-                server: 'ss.example.com',
-                port: 443,
-                cipher: 'aes-128-gcm',
-                password: 'pwd',
-                plugin: 'shadow-tls',
-                'plugin-opts': {
-                    password: 'pass',
-                    host: 'apple.com',
-                    version: 3,
-                },
-            });
-            expect(stls).to.equal(
-                'SS-STLS = shadowsocks, ss.example.com, 443, aes-128-gcm, pwd, shadow-tls-password=pass, shadow-tls-sni=apple.com, shadow-tls-version=3',
-            );
+            expect(() =>
+                producer.produce({
+                    type: 'ss',
+                    name: 'SS-STLS',
+                    server: 'ss.example.com',
+                    port: 443,
+                    cipher: 'aes-128-gcm',
+                    password: 'pwd',
+                    plugin: 'shadow-tls',
+                    'plugin-opts': {
+                        password: 'pass',
+                        host: 'apple.com',
+                        version: 3,
+                    },
+                }),
+            ).to.throw(RingUnsupportedProxyError);
         });
 
         it('converts all Sing Mux parameters from top-level, smux and multiplex objects', function () {
@@ -309,7 +308,7 @@ describe('Ring producer & platform tests', function () {
                 port: 443,
                 password: 'pass',
             });
-            expect(trojan).to.include('trojan, t.com, 443, pass, tls=true');
+            expect(trojan).to.include('trojan, t.com, 443, password=pass, tls=true');
 
             const hy = producer.produce({
                 type: 'hysteria2',
@@ -331,10 +330,12 @@ describe('Ring producer & platform tests', function () {
                 port: 8443,
                 uuid: UUID,
                 password: 'pass',
-                'udp-relay-mode': 'native',
+                'udp-relay-mode': 'NATIVE',
+                'congestion-controller': 'bbr',
             });
             expect(tuic).to.include('tuic, tuic.com, 8443');
             expect(tuic).to.include('udp-relay-mode=native');
+            expect(tuic).not.to.include('congestion-controller');
 
             const wg = producer.produce({
                 type: 'wireguard',
@@ -349,9 +350,114 @@ describe('Ring producer & platform tests', function () {
                     },
                 ],
             });
-            expect(wg).to.include('wireguard');
+            expect(wg).to.include('wireguard, addresses=10.0.0.2');
+            expect(wg).not.to.include('/32');
             expect(wg).to.include('endpoint=wg.com:51820');
             expect(wg).to.include('allowed-ips="0.0.0.0/0, ::/0"');
+        });
+
+        it('produces WireGuard with pure IPs without CIDR mask, reserved array, keepalive, and interface dns', function () {
+            const wg = producer.produce({
+                type: 'wireguard',
+                name: 'WG-Advanced',
+                addresses: ['10.0.0.2/32', 'fd00::2/128'],
+                'private-key': 'privkey',
+                mtu: 1420,
+                dns: ['1.1.1.1', '8.8.8.8'],
+                peers: [
+                    {
+                        'public-key': 'pubkey',
+                        endpoint: 'wg.example.com:51820',
+                        'allowed-ips': '0.0.0.0/0, ::/0',
+                        reserved: [0, 0, 0],
+                        keepalive: 25,
+                    },
+                ],
+            });
+            expect(wg).to.include('addresses="10.0.0.2, fd00::2"');
+            expect(wg).not.to.include('/32');
+            expect(wg).not.to.include('/128');
+            expect(wg).to.include('dns="1.1.1.1, 8.8.8.8"');
+            expect(wg).to.include('reserved=[0,0,0]');
+            expect(wg).to.include('keepalive=25');
+        });
+
+        it('produces Hysteria with Salamander obfs, down unit preservation, and forbids up or congestion-controller', function () {
+            const hy = producer.produce({
+                type: 'hysteria2',
+                name: 'Hy2-Obfs',
+                server: 'hy2.example.com',
+                port: 443,
+                password: 'pass',
+                'obfs-password': 'salamander-pwd',
+                down: '100 Mbps',
+                up: '50 Mbps',
+                'congestion-controller': 'bbr',
+            });
+            expect(hy).to.include('obfs=salamander-pwd');
+            expect(hy).to.include('down=100mbps');
+            expect(hy).not.to.include('up=');
+            expect(hy).not.to.include('congestion-controller=');
+        });
+
+        it('produces ShadowTLS without skip-cert-verify or enable-early-data', function () {
+            const st = producer.produce({
+                type: 'shadowtls',
+                name: 'ST-Node',
+                server: 'st.example.com',
+                port: 443,
+                password: 'pass',
+                sni: 'apple.com',
+                version: 3,
+                'skip-cert-verify': true,
+                'enable-early-data': true,
+            });
+            expect(st).to.equal(
+                'ST-Node = shadowtls, st.example.com, 443, password=pass, sni=apple.com, version=3',
+            );
+            expect(st).not.to.include('skip-cert-verify');
+            expect(st).not.to.include('enable-early-data');
+        });
+
+        it('produces Tailscale with pure options format and no server/port positional arguments', function () {
+            const ts = producer.produce({
+                type: 'tailscale',
+                name: 'TS-Node',
+                server: 'ts.example.com',
+                port: 443,
+                'auth-key': 'tskey-auth-xxx',
+                hostname: 'my-node',
+                'control-url': 'https://controlplane.tailscale.com',
+                'exit-node': 'exit-us',
+            });
+            expect(ts).to.equal(
+                'TS-Node = tailscale, auth-key=tskey-auth-xxx, hostname=my-node, control-url=https://controlplane.tailscale.com, exit-node=exit-us',
+            );
+            expect(ts).not.to.include('ts.example.com');
+            expect(ts).not.to.include('443');
+        });
+
+        it('produces base strategies direct and reject without network connection options', function () {
+            const d = producer.produce({
+                type: 'direct',
+                name: 'Direct-Node',
+                tfo: true,
+                'ip-version': 'ipv4',
+            });
+            expect(d).to.equal('Direct-Node = direct');
+            expect(d).not.to.include('tfo=');
+            expect(d).not.to.include('ip-version=');
+
+            for (const rType of ['reject', 'reject-drop', 'reject-tinygif', 'reject-no-drop']) {
+                const r = producer.produce({
+                    type: rType,
+                    name: `R-${rType}`,
+                    tfo: true,
+                    'ip-version': 'ipv4',
+                });
+                expect(r).to.equal(`R-${rType} = ${rType}`);
+                expect(r).not.to.include('tfo=');
+            }
         });
 
         it('sanitizes names and properly quotes special characters', function () {
@@ -389,7 +495,7 @@ describe('Ring producer & platform tests', function () {
                 { type: 'direct', name: 'Direct-Node' },
             ];
             const output = ProxyUtils.produce(proxies, 'Ring', 'external');
-            expect(output).to.include('SS-Node = shadowsocks, 1.2.3.4, 8388, aes-128-gcm, pwd');
+            expect(output).to.include('SS-Node = shadowsocks, 1.2.3.4, 8388, encrypt-method=aes-128-gcm, password=pwd');
             expect(output).to.include('Direct-Node = direct');
             expect(output).not.to.include('VLESS-Node');
         });
@@ -529,10 +635,10 @@ describe('Ring producer & platform tests', function () {
             const processed = await ProxyUtils.process(proxies, operators, 'Ring');
             const ringIni = ProxyUtils.produce(processed, 'Ring');
             expect(ringIni).to.include(
-                'SS-Node = shadowsocks, 1.2.3.4, 8388, aes-128-gcm, pwd, sing-mux=true',
+                'SS-Node = shadowsocks, 1.2.3.4, 8388, encrypt-method=aes-128-gcm, password=pwd, sing-mux=true',
             );
             expect(ringIni).to.include(
-                'Trojan-Node = trojan, 2.3.4.5, 443, pwd, tls=true, sni=ring.example.com',
+                'Trojan-Node = trojan, 2.3.4.5, 443, password=pwd, tls=true, sni=ring.example.com',
             );
         });
 
@@ -573,7 +679,7 @@ describe('Ring producer & platform tests', function () {
 
             const ringIni = ProxyUtils.produce(filtered, 'Ring');
             expect(ringIni).to.equal(
-                'SS-Keep = shadowsocks, 1.1.1.1, 8388, aes-128-gcm, pwd',
+                'SS-Keep = shadowsocks, 1.1.1.1, 8388, encrypt-method=aes-128-gcm, password=pwd',
             );
             expect(ringIni).not.to.include('SS-Drop');
         });

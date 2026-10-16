@@ -1,4 +1,4 @@
-import { isPresent, getWireGuardAddressWithCIDR } from './utils';
+import { isPresent } from './utils';
 
 const targetPlatform = 'Ring';
 
@@ -282,6 +282,8 @@ export default function Ring_Producer() {
                 break;
             case 'reject':
             case 'reject-drop':
+            case 'reject-tinygif':
+            case 'reject-no-drop':
                 result = reject(proxy);
                 break;
             default:
@@ -335,8 +337,11 @@ function appendWsHeaders(options, proxy) {
 function shadowsocks(proxy) {
     const cipher = proxy.cipher || 'none';
     const password = quoteRingValue(proxy.password || '');
-    const items = ['shadowsocks', proxy.server, proxy.port, cipher, password];
-    const options = [];
+    const items = ['shadowsocks', proxy.server, proxy.port];
+    const options = [
+        `encrypt-method=${quoteRingValue(cipher)}`,
+        `password=${password}`,
+    ];
 
     if (isPresent(proxy, 'plugin')) {
         if (proxy.plugin === 'obfs') {
@@ -348,24 +353,6 @@ function shadowsocks(proxy) {
             }
             if (proxy['plugin-opts']?.path) {
                 options.push(`obfs-path=${quoteRingValue(proxy['plugin-opts'].path)}`);
-            }
-        } else if (proxy.plugin === 'shadow-tls') {
-            if (proxy['plugin-opts']?.password) {
-                options.push(
-                    `shadow-tls-password=${quoteRingValue(
-                        proxy['plugin-opts'].password,
-                    )}`,
-                );
-            }
-            if (proxy['plugin-opts']?.host) {
-                options.push(
-                    `shadow-tls-sni=${quoteRingValue(
-                        proxy['plugin-opts'].host,
-                    )}`,
-                );
-            }
-            if (proxy['plugin-opts']?.version) {
-                options.push(`shadow-tls-version=${proxy['plugin-opts'].version}`);
             }
         } else {
             throw unsupported(
@@ -390,8 +377,8 @@ function vmess(proxy, includeUnsupportedProxy) {
     }
 
     const uuid = quoteRingValue(proxy.uuid || '');
-    const items = ['vmess', proxy.server, proxy.port, uuid];
-    const options = [];
+    const items = ['vmess', proxy.server, proxy.port];
+    const options = [`uuid=${uuid}`];
 
     if (proxy.network === 'ws') {
         options.push('ws=true');
@@ -436,20 +423,17 @@ function trojan(proxy, includeUnsupportedProxy) {
     }
 
     const password = quoteRingValue(proxy.password || '');
-    const items = ['trojan', proxy.server, proxy.port, password];
-    const options = [];
+    const items = ['trojan', proxy.server, proxy.port];
+    const options = [`password=${password}`, 'tls=true'];
 
-    if (proxy.tls !== false) {
-        options.push('tls=true');
-        const sni = proxy.sni || proxy.server;
-        if (sni) {
-            options.push(`sni=${quoteRingValue(sni)}`);
-        }
-        if (proxy['skip-cert-verify']) {
-            options.push('skip-cert-verify=true');
-        }
-        appendAlpns(options, proxy);
+    const sni = proxy.sni || proxy.server;
+    if (sni) {
+        options.push(`sni=${quoteRingValue(sni)}`);
     }
+    if (proxy['skip-cert-verify']) {
+        options.push('skip-cert-verify=true');
+    }
+    appendAlpns(options, proxy);
 
     if (proxy.network === 'ws') {
         options.push('ws=true');
@@ -464,6 +448,15 @@ function trojan(proxy, includeUnsupportedProxy) {
     return `${proxy.name} = ${items.concat(options).join(', ')}`;
 }
 
+function formatHysteriaDown(down) {
+    if (down == null) return '';
+    const s = String(down).trim().toLowerCase();
+    if (/^\d+$/.test(s)) {
+        return s;
+    }
+    return s.replace(/\s+/g, '');
+}
+
 function hysteria(proxy) {
     const items = ['hysteria', proxy.server, proxy.port];
     const options = [];
@@ -473,9 +466,17 @@ function hysteria(proxy) {
         options.push(`auth=${quoteRingValue(auth)}`);
     }
 
-    const down = proxy.down || proxy['down-mbps'] || proxy.down_mbps;
-    if (down != null && `${down}`.length > 0) {
+    const downVal = proxy.down || proxy['down-mbps'] || proxy.down_mbps;
+    const down = formatHysteriaDown(downVal);
+    if (down) {
         options.push(`down=${quoteRingValue(down)}`);
+    }
+
+    const obfs =
+        proxy['obfs-password'] ??
+        (typeof proxy.obfs === 'string' ? proxy.obfs : undefined);
+    if (obfs != null && `${obfs}`.length > 0) {
+        options.push(`obfs=${quoteRingValue(obfs)}`);
     }
 
     const sni = proxy.sni || proxy.server;
@@ -505,8 +506,14 @@ function tuic(proxy) {
         options.push(`password=${quoteRingValue(password)}`);
     }
 
-    if (proxy['udp-relay-mode']) {
-        options.push(`udp-relay-mode=${quoteRingValue(proxy['udp-relay-mode'])}`);
+    const rawUdpRelayMode = proxy['udp-relay-mode'] || proxy.udp_relay_mode;
+    if (rawUdpRelayMode) {
+        const mode = String(rawUdpRelayMode).trim().toLowerCase();
+        if (mode === 'native' || mode === 'quic') {
+            options.push(`udp-relay-mode=${mode}`);
+        } else {
+            options.push(`udp-relay-mode=${quoteRingValue(rawUdpRelayMode)}`);
+        }
     }
 
     const sni = proxy.sni || proxy.server;
@@ -518,34 +525,45 @@ function tuic(proxy) {
         options.push('skip-cert-verify=true');
     }
 
-    if (proxy['congestion-controller']) {
-        options.push(
-            `congestion-controller=${quoteRingValue(proxy['congestion-controller'])}`,
-        );
-    }
-
     appendAlpns(options, proxy);
     appendCommonOptions(options, proxy);
     return `${proxy.name} = ${items.concat(options).join(', ')}`;
 }
 
+function cleanIpWithoutMask(val) {
+    if (!val) return '';
+    const s = String(stripQuotes(val)).trim();
+    return s.replace(/\/\d+$/, '').trim();
+}
+
+function formatWireGuardReserved(val) {
+    if (!val) return '';
+    let parts;
+    if (Array.isArray(val)) {
+        parts = val;
+    } else {
+        const s = String(val).replace(/[\[\]]/g, '').trim();
+        parts = s.split(',').map((x) => x.trim()).filter(Boolean);
+    }
+    return `[${parts.map((x) => parseInt(x, 10) || 0).join(',')}]`;
+}
+
 function wireguard(proxy) {
-    const addresses = [];
+    const rawList = [];
     if (proxy.addresses) {
         const raw = Array.isArray(proxy.addresses)
             ? proxy.addresses
             : [proxy.addresses];
-        addresses.push(...raw);
+        rawList.push(...raw);
     } else {
-        const ipv4 = getWireGuardAddressWithCIDR(proxy, 'ipv4') || proxy.ip;
-        const ipv6 = getWireGuardAddressWithCIDR(proxy, 'ipv6') || proxy.ipv6;
-        if (ipv4) addresses.push(ipv4);
-        if (ipv6) addresses.push(ipv6);
+        if (proxy.ip) rawList.push(proxy.ip);
+        if (proxy.ipv6) rawList.push(proxy.ipv6);
     }
-    const addrStr = addresses
-        .map((a) => String(a).trim())
-        .filter(Boolean)
-        .join(', ');
+    const cleanIps = rawList
+        .flatMap((item) => String(stripQuotes(item)).split(','))
+        .map((item) => cleanIpWithoutMask(item))
+        .filter(Boolean);
+    const addrStr = cleanIps.join(', ');
 
     const peers = [];
     const rawPeers =
@@ -560,6 +578,10 @@ function wireguard(proxy) {
                       'pre-shared-key':
                           proxy['pre-shared-key'] || proxy['preshared-key'],
                       reserved: proxy.reserved,
+                      keepalive:
+                          proxy.keepalive ??
+                          proxy['persistent-keepalive'] ??
+                          proxy.persistent_keepalive,
                   },
               ];
 
@@ -584,10 +606,14 @@ function wireguard(proxy) {
             peerParts.push(`preshared-key=${quoteRingValue(psk)}`);
         }
         if (p.reserved) {
-            const res = Array.isArray(p.reserved)
-                ? p.reserved.join(',')
-                : p.reserved;
-            peerParts.push(`reserved=${quoteRingValue(res)}`);
+            peerParts.push(`reserved=${formatWireGuardReserved(p.reserved)}`);
+        }
+        const keepalive =
+            p.keepalive ??
+            p['persistent-keepalive'] ??
+            p.persistent_keepalive;
+        if (keepalive != null && !Number.isNaN(Number(keepalive))) {
+            peerParts.push(`keepalive=${parseInt(keepalive, 10)}`);
         }
         peers.push(`{${peerParts.join(',')}}`);
     }
@@ -597,8 +623,22 @@ function wireguard(proxy) {
         `addresses=${quoteRingValue(addrStr)}`,
         `private-key=${quoteRingValue(proxy['private-key'] || '')}`,
         `mtu=${proxy.mtu || 1280}`,
-        `peers=[${peers.join(',')}]`,
     ];
+
+    const dnsVal = proxy.dns || proxy['dns-servers'];
+    if (dnsVal) {
+        const rawDns = Array.isArray(dnsVal) ? dnsVal : [dnsVal];
+        const dnsStr = rawDns
+            .flatMap((item) => String(stripQuotes(item)).split(','))
+            .map((item) => String(stripQuotes(item)).trim())
+            .filter(Boolean)
+            .join(', ');
+        if (dnsStr) {
+            items.push(`dns=${quoteRingValue(dnsStr)}`);
+        }
+    }
+
+    items.push(`peers=[${peers.join(',')}]`);
 
     const options = [];
     appendCommonOptions(options, proxy);
@@ -607,11 +647,11 @@ function wireguard(proxy) {
 
 function socks(proxy) {
     const items = ['socks', proxy.server, proxy.port];
-    if (isPresent(proxy, 'username')) {
-        items.push(quoteRingValue(proxy.username));
-        items.push(quoteRingValue(proxy.password || ''));
-    }
     const options = [];
+    if (isPresent(proxy, 'username')) {
+        options.push(`username=${quoteRingValue(proxy.username)}`);
+        options.push(`password=${quoteRingValue(proxy.password || '')}`);
+    }
     if (proxy.tls) {
         options.push('tls=true');
         const sni = proxy.sni || proxy.server;
@@ -628,11 +668,11 @@ function socks(proxy) {
 
 function http(proxy) {
     const items = ['http', proxy.server, proxy.port];
-    if (isPresent(proxy, 'username')) {
-        items.push(quoteRingValue(proxy.username));
-        items.push(quoteRingValue(proxy.password || ''));
-    }
     const options = [];
+    if (isPresent(proxy, 'username')) {
+        options.push(`username=${quoteRingValue(proxy.username)}`);
+        options.push(`password=${quoteRingValue(proxy.password || '')}`);
+    }
     if (proxy.tls === true || proxy.type === 'https') {
         options.push('tls=true');
         const sni = proxy.sni || proxy.server;
@@ -690,9 +730,7 @@ function shadowtls(proxy) {
     if (version) {
         options.push(`version=${version}`);
     }
-    if (proxy['skip-cert-verify']) {
-        options.push('skip-cert-verify=true');
-    }
+    // 严禁输出 skip-cert-verify=true 或 enable-early-data=true
     appendAlpns(options, proxy);
     appendCommonOptions(options, proxy);
     return `${proxy.name} = ${items.concat(options).join(', ')}`;
@@ -717,15 +755,14 @@ function ssh(proxy) {
 
 function tailscale(proxy) {
     const items = ['tailscale'];
-    if (proxy.server && proxy.port) {
-        items.push(proxy.server, proxy.port);
-    } else if (proxy.server) {
-        items.push(proxy.server);
-    }
     const options = [];
     const authKey = proxy['auth-key'] || proxy.authkey;
     if (authKey) {
         options.push(`auth-key=${quoteRingValue(authKey)}`);
+    }
+    const hostname = proxy.hostname || proxy['device-name'];
+    if (hostname) {
+        options.push(`hostname=${quoteRingValue(hostname)}`);
     }
     const controlUrl = proxy['control-url'] || proxy.control_url;
     if (controlUrl) {
@@ -740,16 +777,9 @@ function tailscale(proxy) {
 }
 
 function direct(proxy) {
-    const items = ['direct'];
-    const options = [];
-    appendCommonOptions(options, proxy);
-    return `${proxy.name} = ${items.concat(options).join(', ')}`;
+    return `${proxy.name} = direct`;
 }
 
 function reject(proxy) {
-    const type = proxy.type === 'reject-drop' ? 'reject-drop' : 'reject';
-    const items = [type];
-    const options = [];
-    appendCommonOptions(options, proxy);
-    return `${proxy.name} = ${items.concat(options).join(', ')}`;
+    return `${proxy.name} = ${proxy.type}`;
 }
