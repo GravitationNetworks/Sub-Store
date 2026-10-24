@@ -1,5 +1,5 @@
 import { expect } from 'chai';
-import { describe, it } from 'mocha';
+import { describe, it, before, after } from 'mocha';
 
 import Ring_Producer, {
     RingUnsupportedProxyError,
@@ -32,7 +32,9 @@ describe('Ring producer & platform tests', function () {
             };
             const r1 = PROXY_PRODUCERS.Ring.produce(node);
             const r2 = PROXY_PRODUCERS.ring.produce(node);
-            expect(r1).to.equal('SS1 = shadowsocks, 1.1.1.1, 8388, encrypt-method=aes-128-gcm, password=pass');
+            expect(r1).to.equal(
+                'SS1 = shadowsocks, 1.1.1.1, 8388, encrypt-method=aes-128-gcm, password=pass',
+            );
             expect(r1).to.equal(r2);
         });
     });
@@ -95,7 +97,7 @@ describe('Ring producer & platform tests', function () {
     describe('Protocol conversions', function () {
         const producer = Ring_Producer();
 
-        it('produces Shadowsocks with obfs and rejects shadow-tls plugin', function () {
+        it('produces Shadowsocks with obfs and converts shadow-tls plugin', function () {
             const obfs = producer.produce({
                 type: 'ss',
                 name: 'SS-Obfs',
@@ -110,22 +112,23 @@ describe('Ring producer & platform tests', function () {
                 'SS-Obfs = shadowsocks, ss.example.com, 80, encrypt-method=aes-128-gcm, password=pwd, obfs=http, obfs-host=bing.com, obfs-path=/s',
             );
 
-            expect(() =>
-                producer.produce({
-                    type: 'ss',
-                    name: 'SS-STLS',
-                    server: 'ss.example.com',
-                    port: 443,
-                    cipher: 'aes-128-gcm',
-                    password: 'pwd',
-                    plugin: 'shadow-tls',
-                    'plugin-opts': {
-                        password: 'pass',
-                        host: 'apple.com',
-                        version: 3,
-                    },
-                }),
-            ).to.throw(RingUnsupportedProxyError);
+            const stls = producer.produce({
+                type: 'ss',
+                name: 'SS-STLS',
+                server: 'ss.example.com',
+                port: 443,
+                cipher: 'aes-128-gcm',
+                password: 'pwd',
+                plugin: 'shadow-tls',
+                'plugin-opts': {
+                    password: 'pass',
+                    host: 'apple.com',
+                    version: 3,
+                },
+            });
+            expect(stls).to.equal(
+                'SS-STLS = shadowsocks, ss.example.com, 443, encrypt-method=aes-128-gcm, password=pwd, shadow-tls=true, shadow-tls-version=3, shadow-tls-password=pass, shadow-tls-sni=apple.com',
+            );
         });
 
         it('converts all Sing Mux parameters from top-level, smux and multiplex objects', function () {
@@ -400,23 +403,18 @@ describe('Ring producer & platform tests', function () {
             expect(hy).not.to.include('congestion-controller=');
         });
 
-        it('produces ShadowTLS without skip-cert-verify or enable-early-data', function () {
-            const st = producer.produce({
-                type: 'shadowtls',
-                name: 'ST-Node',
-                server: 'st.example.com',
-                port: 443,
-                password: 'pass',
-                sni: 'apple.com',
-                version: 3,
-                'skip-cert-verify': true,
-                'enable-early-data': true,
-            });
-            expect(st).to.equal(
-                'ST-Node = shadowtls, st.example.com, 443, password=pass, sni=apple.com, version=3',
-            );
-            expect(st).not.to.include('skip-cert-verify');
-            expect(st).not.to.include('enable-early-data');
+        it('rejects standalone ShadowTLS nodes', function () {
+            expect(() =>
+                producer.produce({
+                    type: 'shadowtls',
+                    name: 'ST-Node',
+                    server: 'st.example.com',
+                    port: 443,
+                    password: 'pass',
+                    sni: 'apple.com',
+                    version: 3,
+                }),
+            ).to.throw(RingUnsupportedProxyError);
         });
 
         it('produces Tailscale with pure options format and no server/port positional arguments', function () {
@@ -435,9 +433,20 @@ describe('Ring producer & platform tests', function () {
             );
             expect(ts).not.to.include('ts.example.com');
             expect(ts).not.to.include('443');
+
+            const tsMode = producer.produce({
+                type: 'tailscale',
+                name: 'TS-Mode',
+                'auth-key': 'tskey-auth-xxx',
+                'connection-mode': 'no-peer-relay',
+                'derp-only': true,
+            });
+            expect(tsMode).to.equal(
+                'TS-Mode = tailscale, auth-key=tskey-auth-xxx, connection-mode=no-peer-relay',
+            );
         });
 
-        it('produces base strategies direct and reject without network connection options', function () {
+        it('produces base strategy direct without network connection options', function () {
             const d = producer.produce({
                 type: 'direct',
                 name: 'Direct-Node',
@@ -447,17 +456,6 @@ describe('Ring producer & platform tests', function () {
             expect(d).to.equal('Direct-Node = direct');
             expect(d).not.to.include('tfo=');
             expect(d).not.to.include('ip-version=');
-
-            for (const rType of ['reject', 'reject-drop', 'reject-tinygif', 'reject-no-drop']) {
-                const r = producer.produce({
-                    type: rType,
-                    name: `R-${rType}`,
-                    tfo: true,
-                    'ip-version': 'ipv4',
-                });
-                expect(r).to.equal(`R-${rType} = ${rType}`);
-                expect(r).not.to.include('tfo=');
-            }
         });
 
         it('sanitizes names and properly quotes special characters', function () {
@@ -865,6 +863,593 @@ describe('Ring producer & platform tests', function () {
                 }),
             ).to.throw(RingUnsupportedProxyError);
         });
+
+        it('converts server-cert-fingerprint-sha256 across all TLS-supported protocols and handles aliases', function () {
+            const hexRaw =
+                '11:22:33:44:55:66:77:88:99:00:AA:BB:CC:DD:EE:FF:11:22:33:44:55:66:77:88:99:00:AA:BB:CC:DD:EE:FF';
+            const hexCleaned =
+                '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff';
+
+            // 1. VMess with server-cert-fingerprint-sha256 containing colons
+            const vmessRes = producer.produce({
+                type: 'vmess',
+                name: 'VMess-Cert',
+                server: 'v.com',
+                port: 443,
+                uuid: UUID,
+                tls: true,
+                'server-cert-fingerprint-sha256': hexRaw,
+            });
+            expect(vmessRes).to.include(
+                `server-cert-fingerprint-sha256=${hexCleaned}`,
+            );
+
+            // 2. Trojan with tls-fingerprint
+            const trojanRes = producer.produce({
+                type: 'trojan',
+                name: 'Trojan-Cert',
+                server: 't.com',
+                port: 443,
+                password: 'pass',
+                'tls-fingerprint': hexCleaned,
+            });
+            expect(trojanRes).to.include(
+                `server-cert-fingerprint-sha256=${hexCleaned}`,
+            );
+
+            // 3. Hysteria2 with certificate-sha256
+            const hyRes = producer.produce({
+                type: 'hysteria2',
+                name: 'Hy-Cert',
+                server: 'h.com',
+                port: 443,
+                password: 'pass',
+                'certificate-sha256': hexCleaned,
+            });
+            expect(hyRes).to.include(
+                `server-cert-fingerprint-sha256=${hexCleaned}`,
+            );
+
+            // 4. TUIC with cert-fingerprint-sha256
+            const tuicRes = producer.produce({
+                type: 'tuic',
+                name: 'TUIC-Cert',
+                server: 'tuic.com',
+                port: 443,
+                uuid: UUID,
+                password: 'pass',
+                'cert-fingerprint-sha256': hexCleaned,
+            });
+            expect(tuicRes).to.include(
+                `server-cert-fingerprint-sha256=${hexCleaned}`,
+            );
+
+            // 5. HTTPS with server-cert-sha256
+            const httpsRes = producer.produce({
+                type: 'https',
+                name: 'HTTPS-Cert',
+                server: 'http.com',
+                port: 443,
+                'server-cert-sha256': hexCleaned,
+            });
+            expect(httpsRes).to.include(
+                `server-cert-fingerprint-sha256=${hexCleaned}`,
+            );
+
+            // 6. SOCKS with tls and tls-cert-sha256
+            const socksRes = producer.produce({
+                type: 'socks5',
+                name: 'SOCKS-Cert',
+                server: 'socks.com',
+                port: 443,
+                tls: true,
+                'tls-cert-sha256': hexCleaned,
+            });
+            expect(socksRes).to.include(
+                `server-cert-fingerprint-sha256=${hexCleaned}`,
+            );
+
+            // 7. AnyTLS with ca-sha256
+            const anytlsRes = producer.produce({
+                type: 'anytls',
+                name: 'AnyTLS-Cert',
+                server: 'anytls.com',
+                port: 443,
+                password: 'pass',
+                'ca-sha256': hexCleaned,
+            });
+            expect(anytlsRes).to.include(
+                `server-cert-fingerprint-sha256=${hexCleaned}`,
+            );
+
+            // 8. 64-hex proxy.fingerprint
+            const fpHexRes = producer.produce({
+                type: 'trojan',
+                name: 'Trojan-FpHex',
+                server: 't.com',
+                port: 443,
+                password: 'pass',
+                fingerprint: hexCleaned,
+            });
+            expect(fpHexRes).to.include(
+                `server-cert-fingerprint-sha256=${hexCleaned}`,
+            );
+
+            // 9. uTLS client fingerprint (e.g. 'chrome') must NOT be treated as server cert sha256
+            const fpUtlsRes = producer.produce({
+                type: 'trojan',
+                name: 'Trojan-FpUtls',
+                server: 't.com',
+                port: 443,
+                password: 'pass',
+                fingerprint: 'chrome',
+            });
+            expect(fpUtlsRes).not.to.include('server-cert-fingerprint-sha256');
+        });
+
+        it('converts shadow-tls plugin, STLS fingerprint, and enforces protocol constraints', function () {
+            const hexCleaned =
+                '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff';
+
+            // 1. Shadowsocks with STLS certificate fingerprint from plugin-opts
+            const ssStls = producer.produce({
+                type: 'ss',
+                name: 'SS-STLS-Cert',
+                server: 'stls.example.com',
+                port: 443,
+                cipher: 'aes-128-gcm',
+                password: 'ss-password',
+                plugin: 'shadow-tls',
+                'plugin-opts': {
+                    version: 3,
+                    password: 'stls-password',
+                    host: 'cover.example.com',
+                    'tls-fingerprint': hexCleaned,
+                    alpn: ['h2', 'http/1.1'],
+                },
+                'skip-cert-verify': true,
+                'enable-early-data': true,
+            });
+            expect(ssStls).to.include('shadow-tls=true');
+            expect(ssStls).to.include('shadow-tls-version=3');
+            expect(ssStls).to.include('shadow-tls-password=stls-password');
+            expect(ssStls).to.include('shadow-tls-sni=cover.example.com');
+            expect(ssStls).to.include(
+                `shadow-tls-server-cert-fingerprint-sha256=${hexCleaned}`,
+            );
+            expect(ssStls).to.include('shadow-tls-alpns="h2,http/1.1"');
+            expect(ssStls).not.to.match(/(?:^|,\s+)tls=true(?=,|$)/);
+            expect(ssStls).not.to.include('skip-cert-verify');
+            expect(ssStls).not.to.include('enable-early-data');
+            expect(ssStls).not.to.include('shadow-tls-skip-cert-verify');
+            expect(ssStls).not.to.include('shadow-tls-enable-early-data');
+
+            // 2. Trojan with STLS (replaces Trojan default TLS)
+            const trojanStls = producer.produce({
+                type: 'trojan',
+                name: 'Trojan-STLS',
+                server: 'stls.example.com',
+                port: 443,
+                password: 'trojan-password',
+                'shadow-tls': true,
+                'shadow-tls-version': 3,
+                'shadow-tls-password': 'stls-password',
+                'shadow-tls-sni': 'cover.example.com',
+                'shadow-tls-server-cert-fingerprint-sha256': hexCleaned,
+            });
+            expect(trojanStls).to.include('password=trojan-password');
+            expect(trojanStls).to.include('shadow-tls=true');
+            expect(trojanStls).to.include('shadow-tls-version=3');
+            expect(trojanStls).to.include('shadow-tls-password=stls-password');
+            expect(trojanStls).to.include('shadow-tls-sni=cover.example.com');
+            expect(trojanStls).to.include(
+                `shadow-tls-server-cert-fingerprint-sha256=${hexCleaned}`,
+            );
+            expect(trojanStls).not.to.match(/(?:^|,\s+)tls=true(?=,|$)/);
+
+            // 3. VMess with STLS and WebSocket
+            const vmessStls = producer.produce({
+                type: 'vmess',
+                name: 'VMess-STLS-WS',
+                server: 'stls.example.com',
+                port: 443,
+                uuid: UUID,
+                cipher: 'aes-128-gcm',
+                network: 'ws',
+                'ws-opts': { path: '/ray' },
+                'shadow-tls': true,
+                'shadow-tls-password': 'stls-password',
+                'shadow-tls-sni': 'cover.example.com',
+            });
+            expect(vmessStls).to.include('cipher=aes-128-gcm');
+            expect(vmessStls).to.include('shadow-tls=true');
+            expect(vmessStls).to.include('shadow-tls-password=stls-password');
+            expect(vmessStls).to.include('shadow-tls-sni=cover.example.com');
+            expect(vmessStls).to.include('ws=true');
+            expect(vmessStls).to.include('ws-path=/ray');
+            expect(vmessStls).not.to.match(/(?:^|,\s+)tls=true(?=,|$)/);
+
+            // 4. Reject STLS on UDP/QUIC protocols
+            expect(() =>
+                producer.produce({
+                    type: 'hysteria2',
+                    name: 'Hy-STLS',
+                    server: 'hy.com',
+                    port: 443,
+                    password: 'pass',
+                    'shadow-tls': true,
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            expect(() =>
+                producer.produce({
+                    type: 'tuic',
+                    name: 'TUIC-STLS',
+                    server: 'tuic.com',
+                    port: 443,
+                    uuid: UUID,
+                    password: 'pass',
+                    'shadow-tls': true,
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            expect(() =>
+                producer.produce({
+                    type: 'wireguard',
+                    name: 'WG-STLS',
+                    addresses: ['10.0.0.2/32'],
+                    'private-key': 'priv==',
+                    'shadow-tls': true,
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            expect(() =>
+                producer.produce({
+                    type: 'tailscale',
+                    name: 'TS-STLS',
+                    'auth-key': 'key',
+                    'shadow-tls': true,
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+        });
+
+        it('handles enable-early-data and skip-cert-verify aliases across protocols', function () {
+            // 1. early-data on VMess
+            const vmessEd = producer.produce({
+                type: 'vmess',
+                name: 'VMess-ED',
+                server: 'v.com',
+                port: 443,
+                uuid: UUID,
+                tls: true,
+                'early-data': true,
+            });
+            expect(vmessEd).to.include('enable-early-data=true');
+
+            // 2. insecure / allowInsecure / tls_insecure aliases
+            const trojanInsecure = producer.produce({
+                type: 'trojan',
+                name: 'Trojan-Insecure',
+                server: 't.com',
+                port: 443,
+                password: 'pass',
+                insecure: true,
+            });
+            expect(trojanInsecure).to.include('skip-cert-verify=true');
+
+            const httpInsecure = producer.produce({
+                type: 'https',
+                name: 'HTTP-Insecure',
+                server: 'h.com',
+                port: 443,
+                allowInsecure: true,
+            });
+            expect(httpInsecure).to.include('skip-cert-verify=true');
+
+            const socksInsecure = producer.produce({
+                type: 'socks5',
+                name: 'SOCKS-Insecure',
+                server: 's.com',
+                port: 443,
+                tls: true,
+                tls_insecure: true,
+            });
+            expect(socksInsecure).to.include('skip-cert-verify=true');
+
+            // TUIC 不输出早期数据，也不允许关闭 TLS。
+            const tuicEd = producer.produce({
+                type: 'tuic',
+                name: 'TUIC-ED',
+                server: 't.com',
+                port: 443,
+                uuid: UUID,
+                password: 'pass',
+                'early-data': true,
+            });
+            expect(tuicEd).not.to.include('enable-early-data');
+            expect(tuicEd).not.to.include('tls=false');
+            expect(() =>
+                producer.produce({
+                    type: 'tuic',
+                    name: 'TUIC-NoTLS',
+                    server: 't.com',
+                    port: 443,
+                    uuid: UUID,
+                    password: '<SECRET>',
+                    tls: false,
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+        });
+
+        it('converts VMess cipher', function () {
+            const vmessAes = producer.produce({
+                type: 'vmess',
+                name: 'VMess-AES',
+                server: 'v.com',
+                port: 443,
+                uuid: UUID,
+                cipher: 'aes-128-gcm',
+            });
+            expect(vmessAes).to.include('cipher=aes-128-gcm');
+
+            const vmessChacha = producer.produce({
+                type: 'vmess',
+                name: 'VMess-Chacha',
+                server: 'v.com',
+                port: 443,
+                uuid: UUID,
+                cipher: 'chacha20-ietf-poly1305',
+            });
+            expect(vmessChacha).to.include('cipher=chacha20-ietf-poly1305');
+
+            const vmessChachaAlias = producer.produce({
+                type: 'vmess',
+                name: 'VMess-Chacha-Alias',
+                server: 'v.com',
+                port: 443,
+                uuid: UUID,
+                cipher: 'chacha20-poly1305',
+            });
+            expect(vmessChachaAlias).to.include(
+                'cipher=chacha20-ietf-poly1305',
+            );
+
+            const vmessAuto = producer.produce({
+                type: 'vmess',
+                name: 'VMess-Auto',
+                server: 'v.com',
+                port: 443,
+                uuid: UUID,
+                cipher: 'auto',
+            });
+            expect(vmessAuto).to.include('cipher=auto');
+
+            const vmessNone = producer.produce({
+                type: 'vmess',
+                name: 'VMess-None',
+                server: 'v.com',
+                port: 443,
+                uuid: UUID,
+                cipher: 'none',
+            });
+            expect(vmessNone).to.include('cipher=none');
+
+            const vmessZero = producer.produce({
+                type: 'vmess',
+                name: 'VMess-Zero',
+                server: 'v.com',
+                port: 443,
+                uuid: UUID,
+                cipher: 'zero',
+            });
+            expect(vmessZero).to.include('cipher=auto');
+
+            const vmessOmit = producer.produce({
+                type: 'vmess',
+                name: 'VMess-Default',
+                server: 'v.com',
+                port: 443,
+                uuid: UUID,
+            });
+            expect(vmessOmit).not.to.include('cipher=');
+        });
+
+        it('converts AnyTLS connection pool parameters and STLS', function () {
+            const anytlsPool = producer.produce({
+                type: 'anytls',
+                name: 'AnyTLS-Pool',
+                server: 'a.com',
+                port: 443,
+                password: 'pass',
+                'idle-session-check-interval': 30,
+                'idle-session-timeout': 60,
+                'min-idle-session': 5,
+                'max-streams-per-session': 8,
+            });
+            expect(anytlsPool).to.include('idle-session-check-interval=30');
+            expect(anytlsPool).to.include('idle-session-timeout=60');
+            expect(anytlsPool).to.include('min-idle-session=5');
+            expect(anytlsPool).to.include('max-streams-per-session=8');
+
+            const anytlsStls = producer.produce({
+                type: 'anytls',
+                name: 'AnyTLS-STLS',
+                server: 'stls.example.com',
+                port: 443,
+                password: 'anytls-password',
+                'shadow-tls': true,
+                'shadow-tls-password': 'stls-password',
+                'shadow-tls-sni': 'cover.example.com',
+                'idle-session-timeout': 60,
+            });
+            expect(anytlsStls).to.include('password=anytls-password');
+            expect(anytlsStls).to.include('shadow-tls=true');
+            expect(anytlsStls).to.include('shadow-tls-password=stls-password');
+            expect(anytlsStls).to.include('shadow-tls-sni=cover.example.com');
+            expect(anytlsStls).to.include('idle-session-timeout=60');
+            expect(anytlsStls).not.to.match(/(?:^|,\s+)tls=true(?=,|$)/);
+        });
+
+        it('converts SSH options and STLS', function () {
+            const sshNode = producer.produce({
+                type: 'ssh',
+                name: 'SSH-Node',
+                server: 'ssh.example.com',
+                port: 22,
+                username: 'deploy',
+                password: 'secret-password',
+                'idle-timeout': 300,
+                'server-fingerprint': 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG5',
+            });
+            expect(sshNode).to.include('ssh, ssh.example.com, 22');
+            expect(sshNode).to.include('username=deploy');
+            expect(sshNode).to.include('password=secret-password');
+            expect(sshNode).to.include('idle-timeout=300');
+            expect(sshNode).to.include(
+                'server-fingerprint="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG5"',
+            );
+
+            const sshStls = producer.produce({
+                type: 'ssh',
+                name: 'SSH-STLS',
+                server: 'ssh.example.com',
+                port: 443,
+                username: 'deploy',
+                password: 'secret-password',
+                'shadow-tls': true,
+                'shadow-tls-password': 'stls-password',
+                'shadow-tls-sni': 'cover.example.com',
+            });
+            expect(sshStls).to.include('shadow-tls=true');
+            expect(sshStls).to.include('shadow-tls-password=stls-password');
+            expect(sshStls).to.include('shadow-tls-sni=cover.example.com');
+        });
+
+        it('converts Tailscale extended options', function () {
+            const ts = producer.produce({
+                type: 'tailscale',
+                name: 'TS-Mesh',
+                'auth-key': 'tskey-auth-xxx',
+                hostname: 'apple-client',
+                'control-url': 'https://headscale.example.com',
+                'exit-node': 'gateway-node',
+                'http-underlying-proxy': 'SSNode',
+                'dns-server': '100.100.100.100',
+                'derp-only': true,
+                ephemeral: true,
+                mtu: 1360,
+            });
+            expect(ts).to.include('tailscale');
+            expect(ts).to.include('auth-key=tskey-auth-xxx');
+            expect(ts).to.include('hostname=apple-client');
+            expect(ts).to.include('control-url=https://headscale.example.com');
+            expect(ts).to.include('exit-node=gateway-node');
+            expect(ts).to.include('http-underlying-proxy=SSNode');
+            expect(ts).to.include('dns-server=100.100.100.100');
+            expect(ts).to.include('derp-only=true');
+            expect(ts).to.include('ephemeral=true');
+            expect(ts).to.include('mtu=1360');
+        });
+
+        it('converts HTTP custom headers', function () {
+            const httpNode = producer.produce({
+                type: 'http',
+                name: 'Http-Headers',
+                server: 'proxy.example.com',
+                port: 8080,
+                username: 'user',
+                password: 'pwd',
+                headers: {
+                    'X-Proxy-Auth': 'token123',
+                    'User-Agent': 'CustomAgent',
+                },
+            });
+            expect(httpNode).to.include(
+                'headers=X-Proxy-Auth:token123|User-Agent:CustomAgent',
+            );
+        });
+
+        it('converts Hysteria Realm extensions', function () {
+            const hexCleaned =
+                '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff';
+            const hyRealm = producer.produce({
+                type: 'hysteria',
+                name: 'Hy-Realm',
+                server: 'hy.example.com',
+                port: 443,
+                auth: 'pass',
+                realm: 'realm://secret@coord.example.com/tunnel1',
+                'realm-underlying-proxy': 'UnderlyingNode',
+                'realm-stun': [
+                    'stun.example.com:3478',
+                    'stun1.example.com:3478',
+                ],
+                'realm-stun-timeout': 5,
+                'realm-http-timeout': 10,
+                'realm-punch-timeout': 5,
+                'realm-insecure': true,
+                'realm-sni': 'coord.example.com',
+                'realm-server-cert-fingerprint-sha256': hexCleaned,
+            });
+            expect(hyRealm).to.include(
+                'realm=realm://secret@coord.example.com/tunnel1',
+            );
+            expect(hyRealm).to.include('realm-underlying-proxy=UnderlyingNode');
+            expect(hyRealm).to.include(
+                'realm-stun="stun.example.com:3478,stun1.example.com:3478"',
+            );
+            expect(hyRealm).to.include('realm-stun-timeout=5');
+            expect(hyRealm).to.include('realm-http-timeout=10');
+            expect(hyRealm).to.include('realm-punch-timeout=5');
+            expect(hyRealm).to.include('realm-insecure=true');
+            expect(hyRealm).to.include('realm-sni=coord.example.com');
+            expect(hyRealm).to.include(
+                `realm-server-cert-fingerprint-sha256=${hexCleaned}`,
+            );
+        });
+
+        it('converts tcp-ecn, dns-resolver-type, and ip4p-prefix', function () {
+            const nodeEcnOn = producer.produce({
+                type: 'ss',
+                name: 'SS-Ecn-On',
+                server: '1.1.1.1',
+                port: 8388,
+                cipher: 'aes-128-gcm',
+                password: 'pwd',
+                'tcp-ecn': true,
+                'dns-resolver-type': 1,
+                'ip4p-prefix': '2001::',
+            });
+            expect(nodeEcnOn).to.include('tcp-ecn=on');
+            expect(nodeEcnOn).to.include('dns-resolver-type=ip4p');
+            expect(nodeEcnOn).to.include('ip4p-prefix=2001::');
+
+            const nodeEcnOff = producer.produce({
+                type: 'ss',
+                name: 'SS-Ecn-Off',
+                server: '1.1.1.1',
+                port: 8388,
+                cipher: 'aes-128-gcm',
+                password: 'pwd',
+                'tcp-ecn': 'off',
+                'dns-resolver-type': 'default',
+            });
+            expect(nodeEcnOff).to.include('tcp-ecn=off');
+            expect(nodeEcnOff).to.include('dns-resolver-type=default');
+
+            const nodeEcnAuto = producer.produce({
+                type: 'ss',
+                name: 'SS-Ecn-Auto',
+                server: '1.1.1.1',
+                port: 8388,
+                cipher: 'aes-128-gcm',
+                password: 'pwd',
+                'tcp-ecn': 'auto',
+                'dns-resolver-type': 0,
+            });
+            expect(nodeEcnAuto).to.include('tcp-ecn=auto');
+            expect(nodeEcnAuto).to.include('dns-resolver-type=default');
+        });
     });
 
     describe('End-to-End ProxyUtils produce', function () {
@@ -898,14 +1483,30 @@ describe('Ring producer & platform tests', function () {
                 { type: 'direct', name: 'Direct-Node' },
             ];
             const output = ProxyUtils.produce(proxies, 'Ring', 'external');
-            expect(output).to.include('SS-Node = shadowsocks, 1.2.3.4, 8388, encrypt-method=aes-128-gcm, password=pwd');
-            expect(output).to.include(`VLESS-Node = vless, 2.3.4.5, 443, uuid=${UUID}, security=tls, sni=vless.example.com`);
+            expect(output).to.include(
+                'SS-Node = shadowsocks, 1.2.3.4, 8388, encrypt-method=aes-128-gcm, password=pwd',
+            );
+            expect(output).to.include(
+                `VLESS-Node = vless, 2.3.4.5, 443, uuid=${UUID}, security=tls, sni=vless.example.com`,
+            );
             expect(output).to.include('Direct-Node = direct');
             expect(output).not.to.include('SSR-Unsupported');
         });
     });
 
     describe('Script operators with Ring target', function () {
+        const originalEnv = process.env.SUB_STORE_FRONTEND_BACKEND_PATH;
+        before(function () {
+            process.env.SUB_STORE_FRONTEND_BACKEND_PATH = '/';
+        });
+        after(function () {
+            if (originalEnv !== undefined) {
+                process.env.SUB_STORE_FRONTEND_BACKEND_PATH = originalEnv;
+            } else {
+                delete process.env.SUB_STORE_FRONTEND_BACKEND_PATH;
+            }
+        });
+
         it('passes targetPlatform === "Ring" to Script Operator operator function', async function () {
             const proxies = [
                 {
@@ -931,7 +1532,11 @@ describe('Ring producer & platform tests', function () {
                     },
                 },
             ];
-            const processed = await ProxyUtils.process(proxies, operators, 'Ring');
+            const processed = await ProxyUtils.process(
+                proxies,
+                operators,
+                'Ring',
+            );
             expect(processed).to.be.an('array').with.lengthOf(1);
             expect(processed[0]._receivedTarget).to.equal('Ring');
         });
@@ -987,7 +1592,11 @@ describe('Ring producer & platform tests', function () {
                     },
                 },
             ];
-            const processed = await ProxyUtils.process(proxies, operators, 'Ring');
+            const processed = await ProxyUtils.process(
+                proxies,
+                operators,
+                'Ring',
+            );
             expect(processed).to.have.lengthOf(2);
             expect(processed[0].name).to.equal('SS-Node');
             expect(processed[0]['sing-mux']).to.be.true;
@@ -1036,7 +1645,11 @@ describe('Ring producer & platform tests', function () {
                     },
                 },
             ];
-            const processed = await ProxyUtils.process(proxies, operators, 'Ring');
+            const processed = await ProxyUtils.process(
+                proxies,
+                operators,
+                'Ring',
+            );
             const ringIni = ProxyUtils.produce(processed, 'Ring');
             expect(ringIni).to.include(
                 'SS-Node = shadowsocks, 1.2.3.4, 8388, encrypt-method=aes-128-gcm, password=pwd, sing-mux=true',
