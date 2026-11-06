@@ -472,6 +472,399 @@ describe('Ring producer & platform tests', function () {
             expect(res).to.match(/^Node1Test = shadowsocks/);
             expect(res).to.include('"p@ss with space,comma=eq#hash\\"quote\\""');
         });
+
+        it('produces VLESS with TCP, TLS, REALITY, Vision, and packet-encoding', function () {
+            const tlsNode = producer.produce({
+                type: 'vless',
+                name: 'VLESS-TLS',
+                server: 'vless.example.com',
+                port: 443,
+                uuid: UUID,
+                tls: true,
+                sni: 'sni.example.com',
+                alpn: ['h2', 'http/1.1'],
+                'skip-cert-verify': true,
+                'tls-fingerprint':
+                    '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff',
+                'client-fingerprint': 'chrome',
+                'packet-encoding': 'packetaddr',
+            });
+            expect(tlsNode).to.equal(
+                `VLESS-TLS = vless, vless.example.com, 443, uuid=${UUID}, packet-encoding=packet, security=tls, sni=sni.example.com, alpns="h2,http/1.1", skip-cert-verify=true, server-cert-fingerprint-sha256=11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff, fingerprint=chrome`,
+            );
+
+            const realityVision = producer.produce({
+                type: 'vless',
+                name: 'VLESS-Vision',
+                server: 'reality.example.com',
+                port: 443,
+                uuid: UUID,
+                tls: true,
+                sni: 'www.microsoft.com',
+                flow: 'xtls-rprx-vision-udp443',
+                'skip-cert-verify': true,
+                'reality-opts': {
+                    'public-key': 'test-reality-pubkey',
+                    'short-id': '01ab',
+                },
+                'client-fingerprint': 'safari',
+            });
+            expect(realityVision).to.equal(
+                `VLESS-Vision = vless, reality.example.com, 443, uuid=${UUID}, flow=xtls-rprx-vision-udp443, security=reality, sni=www.microsoft.com, reality-public-key=test-reality-pubkey, reality-short-id=01ab, fingerprint=safari`,
+            );
+            expect(realityVision).not.to.include('tls=true');
+            expect(realityVision).not.to.include('skip-cert-verify');
+        });
+
+        it('produces VLESS with WebSocket and gRPC transports', function () {
+            const wsNode = producer.produce({
+                type: 'vless',
+                name: 'VLESS-WS',
+                server: 'cdn.example.com',
+                port: 443,
+                uuid: UUID,
+                network: 'ws',
+                tls: true,
+                sni: 'cdn.example.com',
+                'ws-opts': {
+                    path: '/vless-ws',
+                    headers: {
+                        Host: 'ws.example.com',
+                        'X-Custom': 'val',
+                    },
+                },
+            });
+            expect(wsNode).to.equal(
+                `VLESS-WS = vless, cdn.example.com, 443, uuid=${UUID}, transport=ws, host=ws.example.com, path=/vless-ws, headers=X-Custom:val, security=tls, sni=cdn.example.com`,
+            );
+
+            const grpcNode = producer.produce({
+                type: 'vless',
+                name: 'VLESS-gRPC',
+                server: 'grpc.example.com',
+                port: 443,
+                uuid: UUID,
+                network: 'grpc',
+                tls: true,
+                sni: 'grpc.example.com',
+                alpn: ['h2'],
+                'grpc-opts': {
+                    'grpc-service-name': 'myGunService',
+                    '_grpc-authority': 'auth.example.com',
+                    '_grpc-type': 'multi',
+                },
+            });
+            expect(grpcNode).to.equal(
+                `VLESS-gRPC = vless, grpc.example.com, 443, uuid=${UUID}, transport=grpc, grpc-service-name=myGunService, grpc-authority=auth.example.com, grpc-multi-mode=true, security=tls, sni=grpc.example.com, alpns=h2`,
+            );
+        });
+
+        it('produces VLESS with XHTTP, HTTP/3 ALPN, and flat xhttp-download-* options', function () {
+            const h2ToH3 = producer.produce({
+                type: 'vless',
+                name: 'VLESS-XHTTP-H2-H3',
+                server: 'up.example.com',
+                port: 443,
+                uuid: UUID,
+                network: 'xhttp',
+                tls: true,
+                sni: 'up.example.com',
+                alpn: ['h2'],
+                'xhttp-opts': {
+                    host: 'cdn-up.example.com',
+                    path: '/ring/',
+                    mode: 'auto',
+                    headers: {
+                        'X-Up': '1',
+                    },
+                    'download-settings': {
+                        server: 'down.example.com',
+                        port: 8443,
+                        tls: true,
+                        servername: 'down.example.com',
+                        alpn: ['h3'],
+                        'client-fingerprint': 'chrome',
+                        'skip-cert-verify': true,
+                        host: 'cdn-down.example.com',
+                        headers: {
+                            'X-Down': '2',
+                        },
+                    },
+                },
+            });
+            expect(h2ToH3).to.equal(
+                `VLESS-XHTTP-H2-H3 = vless, up.example.com, 443, uuid=${UUID}, transport=xhttp, host=cdn-up.example.com, path=/ring/, headers=X-Up:1, xhttp-mode=auto, security=tls, sni=up.example.com, alpns=h2, xhttp-download=true, xhttp-download-address=down.example.com, xhttp-download-port=8443, xhttp-download-security=tls, xhttp-download-sni=down.example.com, xhttp-download-alpns=h3, xhttp-download-skip-cert-verify=true, xhttp-download-fingerprint=chrome, xhttp-download-host=cdn-down.example.com, xhttp-download-path=/ring/, xhttp-download-headers=X-Down:2`,
+            );
+
+            // Direct top-level flat xhttp-download-* fields (like sing-mux)
+            const directFlatDownload = producer.produce({
+                type: 'vless',
+                name: 'VLESS-Flat-DL',
+                server: 'up.example.com',
+                port: 443,
+                uuid: UUID,
+                transport: 'xhttp',
+                path: '/ring/',
+                security: 'tls',
+                sni: 'up.example.com',
+                alpns: 'h2',
+                'xhttp-download': true,
+                'xhttp-download-address': 'down.example.com',
+                'xhttp-download-port': 443,
+                'xhttp-download-security': 'tls',
+                'xhttp-download-sni': 'down.example.com',
+                'xhttp-download-alpns': 'h3',
+                'xhttp-download-path': '/ring/',
+            });
+            expect(directFlatDownload).to.equal(
+                `VLESS-Flat-DL = vless, up.example.com, 443, uuid=${UUID}, transport=xhttp, path=/ring/, security=tls, sni=up.example.com, alpns=h2, xhttp-download=true, xhttp-download-address=down.example.com, xhttp-download-port=443, xhttp-download-security=tls, xhttp-download-sni=down.example.com, xhttp-download-alpns=h3, xhttp-download-path=/ring/`,
+            );
+
+            // H3 upload + REALITY download
+            const h3ToReality = producer.produce({
+                type: 'vless',
+                name: 'VLESS-H3-Reality',
+                server: 'up.example.com',
+                port: 443,
+                uuid: UUID,
+                network: 'xhttp',
+                tls: true,
+                sni: 'up.example.com',
+                alpn: ['h3'],
+                'xhttp-opts': {
+                    path: '/ring/',
+                    'download-settings': {
+                        server: 'down.example.com',
+                        port: 443,
+                        tls: true,
+                        servername: 'cover.example.com',
+                        'reality-opts': {
+                            'public-key': 'dl-pubkey',
+                            'short-id': '0a1b',
+                        },
+                        'client-fingerprint': 'ios',
+                    },
+                },
+            });
+            expect(h3ToReality).to.equal(
+                `VLESS-H3-Reality = vless, up.example.com, 443, uuid=${UUID}, transport=xhttp, path=/ring/, security=tls, sni=up.example.com, alpns=h3, xhttp-download=true, xhttp-download-address=down.example.com, xhttp-download-port=443, xhttp-download-security=reality, xhttp-download-sni=cover.example.com, xhttp-download-reality-public-key=dl-pubkey, xhttp-download-reality-short-id=0a1b, xhttp-download-fingerprint=ios, xhttp-download-path=/ring/`,
+            );
+
+            // Mihomo empty public-key cancels REALITY inheritance on download-settings
+            const realityToTls = producer.produce({
+                type: 'vless',
+                name: 'VLESS-Reality-Cancel',
+                server: 'up.example.com',
+                port: 443,
+                uuid: UUID,
+                network: 'xhttp',
+                tls: true,
+                sni: 'cover.example.com',
+                'reality-opts': {
+                    'public-key': 'up-pubkey',
+                },
+                'xhttp-opts': {
+                    path: '/xhttp',
+                    'download-settings': {
+                        server: 'down.example.com',
+                        port: 443,
+                        tls: true,
+                        servername: 'down.example.com',
+                        alpn: ['h3'],
+                        'reality-opts': {
+                            'public-key': '',
+                        },
+                    },
+                },
+            });
+            expect(realityToTls).to.include(
+                'xhttp-download=true, xhttp-download-address=down.example.com, xhttp-download-port=443, xhttp-download-security=tls, xhttp-download-sni=down.example.com, xhttp-download-alpns=h3, xhttp-download-path=/xhttp',
+            );
+        });
+
+        it('round-trips VLESS URIs (REALITY Vision and XHTTP downloadSettings) into Ring INI', function () {
+            const [realityNode] = ProxyUtils.parse(
+                `vless://${UUID}@example.com:443?security=reality&sni=www.microsoft.com&pbk=test-pubkey&sid=01ab&flow=xtls-rprx-vision&fp=chrome#URI-VLESS-Reality`,
+            );
+            const realityIni = producer.produce(realityNode);
+            expect(realityIni).to.equal(
+                `URI-VLESS-Reality = vless, example.com, 443, uuid=${UUID}, flow=xtls-rprx-vision, security=reality, sni=www.microsoft.com, reality-public-key=test-pubkey, reality-short-id=01ab, fingerprint=chrome`,
+            );
+
+            const extra = encodeURIComponent(
+                JSON.stringify({
+                    downloadSettings: {
+                        address: 'down.example.com',
+                        port: 443,
+                        network: 'xhttp',
+                        security: 'tls',
+                        tlsSettings: {
+                            serverName: 'down.example.com',
+                            alpn: ['h3'],
+                            fingerprint: 'chrome',
+                        },
+                        xhttpSettings: {
+                            path: '/xhttp',
+                            host: 'cdn.down.example.com',
+                        },
+                    },
+                }),
+            );
+            const [xhttpNode] = ProxyUtils.parse(
+                `vless://${UUID}@up.example.com:443?type=xhttp&security=reality&sni=cover.example.com&pbk=up-pubkey&sid=0102&path=%2Fxhttp&host=cdn.up.example.com&mode=packet-up&extra=${extra}#URI-VLESS-XHTTP`,
+            );
+            const xhttpIni = producer.produce(xhttpNode);
+            expect(xhttpIni).to.equal(
+                `URI-VLESS-XHTTP = vless, up.example.com, 443, uuid=${UUID}, transport=xhttp, host=cdn.up.example.com, path=/xhttp, xhttp-mode=packet-up, security=reality, sni=cover.example.com, reality-public-key=up-pubkey, reality-short-id=0102, xhttp-download=true, xhttp-download-address=down.example.com, xhttp-download-port=443, xhttp-download-security=tls, xhttp-download-sni=down.example.com, xhttp-download-alpns=h3, xhttp-download-fingerprint=chrome, xhttp-download-host=cdn.down.example.com, xhttp-download-path=/xhttp`,
+            );
+        });
+
+        it('rejects invalid VLESS combinations aligned with core constraints', function () {
+            const base = {
+                type: 'vless',
+                name: 'Invalid-VLESS',
+                server: 'example.com',
+                port: 443,
+                uuid: UUID,
+            };
+
+            // Non-none encryption
+            expect(() =>
+                producer.produce({ ...base, encryption: 'mlkem768' }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            // Unsupported flow
+            expect(() =>
+                producer.produce({
+                    ...base,
+                    tls: true,
+                    flow: 'xtls-rprx-direct',
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            // Vision over non-TCP
+            expect(() =>
+                producer.produce({
+                    ...base,
+                    tls: true,
+                    network: 'ws',
+                    flow: 'xtls-rprx-vision',
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            // Vision without TLS/REALITY
+            expect(() =>
+                producer.produce({
+                    ...base,
+                    flow: 'xtls-rprx-vision',
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            // REALITY over WebSocket
+            expect(() =>
+                producer.produce({
+                    ...base,
+                    network: 'ws',
+                    sni: 'example.com',
+                    'reality-opts': { 'public-key': 'pubkey' },
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            // REALITY without public-key
+            expect(() =>
+                producer.produce({
+                    ...base,
+                    sni: 'example.com',
+                    'reality-opts': { 'short-id': '01' },
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            // REALITY with incapable fingerprint (android)
+            expect(() =>
+                producer.produce({
+                    ...base,
+                    sni: 'example.com',
+                    'reality-opts': { 'public-key': 'pubkey' },
+                    'client-fingerprint': 'android',
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            // HTTP/3 ALPN on non-XHTTP or mixed ALPN or REALITY
+            expect(() =>
+                producer.produce({
+                    ...base,
+                    tls: true,
+                    network: 'ws',
+                    alpn: ['h3'],
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            expect(() =>
+                producer.produce({
+                    ...base,
+                    tls: true,
+                    network: 'xhttp',
+                    alpn: ['h2', 'h3'],
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            expect(() =>
+                producer.produce({
+                    ...base,
+                    network: 'xhttp',
+                    sni: 'example.com',
+                    'reality-opts': { 'public-key': 'pubkey' },
+                    alpn: ['h3'],
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            // xhttp-download with stream-one or mismatched path
+            expect(() =>
+                producer.produce({
+                    ...base,
+                    tls: true,
+                    network: 'xhttp',
+                    'xhttp-opts': {
+                        path: '/up',
+                        mode: 'stream-one',
+                        'download-settings': {
+                            server: 'down.example.com',
+                            port: 443,
+                        },
+                    },
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            expect(() =>
+                producer.produce({
+                    ...base,
+                    tls: true,
+                    network: 'xhttp',
+                    'xhttp-opts': {
+                        path: '/up',
+                        'download-settings': {
+                            server: 'down.example.com',
+                            port: 443,
+                            path: '/down',
+                        },
+                    },
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+
+            // Blocked transport-managed HTTP header
+            expect(() =>
+                producer.produce({
+                    ...base,
+                    tls: true,
+                    network: 'ws',
+                    'ws-opts': {
+                        headers: {
+                            Connection: 'keep-alive',
+                        },
+                    },
+                }),
+            ).to.throw(RingUnsupportedProxyError);
+        });
     });
 
     describe('End-to-End ProxyUtils produce', function () {
@@ -491,13 +884,24 @@ describe('Ring producer & platform tests', function () {
                     server: '2.3.4.5',
                     port: 443,
                     uuid: UUID,
+                    tls: true,
+                    sni: 'vless.example.com',
+                },
+                {
+                    type: 'ssr',
+                    name: 'SSR-Unsupported',
+                    server: '3.4.5.6',
+                    port: 8388,
+                    cipher: 'aes-256-cfb',
+                    password: 'pwd',
                 },
                 { type: 'direct', name: 'Direct-Node' },
             ];
             const output = ProxyUtils.produce(proxies, 'Ring', 'external');
             expect(output).to.include('SS-Node = shadowsocks, 1.2.3.4, 8388, encrypt-method=aes-128-gcm, password=pwd');
+            expect(output).to.include(`VLESS-Node = vless, 2.3.4.5, 443, uuid=${UUID}, security=tls, sni=vless.example.com`);
             expect(output).to.include('Direct-Node = direct');
-            expect(output).not.to.include('VLESS-Node');
+            expect(output).not.to.include('SSR-Unsupported');
         });
     });
 

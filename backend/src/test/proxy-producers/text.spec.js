@@ -5984,6 +5984,53 @@ describe('Ring proxy producer', function () {
         );
     });
 
+    it('produces vless lines with reality, ws, grpc, xhttp and xhttp-download', function () {
+        const realityOutput = produceExternal('Ring', {
+            type: 'vless',
+            name: 'VLESS Reality Vision',
+            server: 'vless.example.com',
+            port: 443,
+            uuid: UUID,
+            tls: true,
+            sni: 'cover.example.com',
+            flow: 'xtls-rprx-vision',
+            'reality-opts': {
+                'public-key': 'reality-pubkey',
+                'short-id': '01ab',
+            },
+            'client-fingerprint': 'chrome',
+        });
+        expect(realityOutput).to.equal(
+            `VLESS Reality Vision = vless, vless.example.com, 443, uuid=${UUID}, flow=xtls-rprx-vision, security=reality, sni=cover.example.com, reality-public-key=reality-pubkey, reality-short-id=01ab, fingerprint=chrome`,
+        );
+
+        const xhttpOutput = produceExternal('Ring', {
+            type: 'vless',
+            name: 'VLESS XHTTP Split',
+            server: 'up.example.com',
+            port: 443,
+            uuid: UUID,
+            network: 'xhttp',
+            tls: true,
+            sni: 'up.example.com',
+            alpn: ['h2'],
+            'xhttp-opts': {
+                path: '/ring/',
+                mode: 'auto',
+                'download-settings': {
+                    server: 'down.example.com',
+                    port: 443,
+                    tls: true,
+                    servername: 'down.example.com',
+                    alpn: ['h3'],
+                },
+            },
+        });
+        expect(xhttpOutput).to.equal(
+            `VLESS XHTTP Split = vless, up.example.com, 443, uuid=${UUID}, transport=xhttp, path=/ring/, xhttp-mode=auto, security=tls, sni=up.example.com, alpns=h2, xhttp-download=true, xhttp-download-address=down.example.com, xhttp-download-port=443, xhttp-download-security=tls, xhttp-download-sni=down.example.com, xhttp-download-alpns=h3, xhttp-download-path=/ring/`,
+        );
+    });
+
     it('produces trojan lines with tls and ws options', function () {
         const output = produceExternal('Ring', {
             type: 'trojan',
